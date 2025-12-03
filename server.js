@@ -10,6 +10,7 @@ const app = express();
 app.use(express.json());
 // CORS middleware: allow only our known frontends (keeps '*' out for security)
 const ALLOWED_FRONTENDS = [
+  'https://grozo-backend.onrender.com',
   'https://grozo-home.netlify.app',
   'https://grozo-admin.netlify.app',
   'https://grozo-dashboard.netlify.app',
