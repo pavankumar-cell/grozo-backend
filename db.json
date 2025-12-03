@@ -1,0 +1,148 @@
+{
+  "products": [],
+  "orders": [
+    {
+      "id": "ORD94717755",
+      "date": "2/12/2025, 10:28:37 pm",
+      "items": [
+        {
+          "id": "p_test",
+          "name": "Test Item",
+          "qty": 1,
+          "price": 10
+        }
+      ],
+      "userName": "Tester",
+      "userPhone": "9999999999",
+      "location": null,
+      "subtotal": 10,
+      "fees": {},
+      "discount": 0,
+      "total": 10,
+      "status": "pending",
+      "history": [
+        {
+          "status": "pending",
+          "at": "2025-12-02T16:58:37.869Z"
+        }
+      ]
+    },
+    {
+      "id": "ORD97304608",
+      "date": "2/12/2025, 11:11:44 pm",
+      "items": [
+        {
+          "id": "rice_small_grains",
+          "name": "Small Rice (10kg)",
+          "price": 40,
+          "qty": 7
+        }
+      ],
+      "userName": "",
+      "userPhone": "9704961172",
+      "location": null,
+      "subtotal": 280,
+      "fees": {
+        "delivery": 25,
+        "handling": 5,
+        "platform": 2
+      },
+      "discount": 50,
+      "total": 262,
+      "status": "pending",
+      "history": [
+        {
+          "status": "pending",
+          "at": "2025-12-02T17:41:44.609Z"
+        }
+      ]
+    },
+    {
+      "id": "ORD97398000",
+      "date": "2/12/2025, 11:13:18 pm",
+      "items": [
+        {
+          "id": "apple_fruit",
+          "name": "Apple (500gm)",
+          "price": 120,
+          "qty": 6
+        }
+      ],
+      "userName": "",
+      "userPhone": "9704961172",
+      "location": {
+        "title": "EQC",
+        "address": "Old Bombay Highway",
+        "flatNo": "201, 3rd floor",
+        "area": "EQC",
+        "pincode": "996544",
+        "state": "Telangana",
+        "district": "Serilingampalle mandal",
+        "city": "Hyderabad",
+        "latitude": 17.428757854849163,
+        "longitude": 78.37339371442796,
+        "savedAt": "12/2/2025, 11:13:02 PM"
+      },
+      "subtotal": 720,
+      "fees": {
+        "delivery": 25,
+        "handling": 5,
+        "platform": 2
+      },
+      "discount": 50,
+      "total": 702,
+      "status": "pending",
+      "history": [
+        {
+          "status": "pending",
+          "at": "2025-12-02T17:43:18.000Z"
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "u_admin",
+      "username": "admin",
+      "passwordHash": "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9",
+      "role": "admin",
+      "name": "Administrator"
+    },
+    {
+      "id": "u_1764695696110",
+      "username": "9949402548",
+      "passwordHash": "299ae77a4ef350ae0dd37d6bba1c002d03444fb1edb236b341962dec14cb4bb4",
+      "role": "delivery",
+      "name": "pavan kumar",
+      "meta": {
+        "vehicle": "bike",
+        "vehicleNo": "TS19D214"
+      }
+    },
+    {
+      "id": "u_1764697512478",
+      "username": "9704961172",
+      "passwordHash": "02ede7e8caf71df40a5bb6495f5fcbc092cf7c87de6beed5d7813910d82ba3bd",
+      "role": "delivery",
+      "name": "pavan kumar",
+      "meta": {
+        "vehicle": "bike",
+        "vehicleNo": "TS01D2140"
+      }
+    }
+  ],
+  "tokens": [
+    {
+      "token": "a4f2e83e71d9c4201a89f545323e914dad93ef7d3d2c7be7",
+      "userId": "u_1764695696110",
+      "createdAt": "2025-12-02T17:14:56.114Z"
+    },
+    {
+      "token": "729b576967d5eacd465eb35921fe163b52155e22290f0460",
+      "userId": "u_1764697512478",
+      "createdAt": "2025-12-02T17:45:12.480Z"
+    }
+  ],
+  "fees": {},
+  "promos": []
+}
