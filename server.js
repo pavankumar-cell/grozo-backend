@@ -8,9 +8,9 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(express.json());
-// CORS middleware: allow only our known frontends (keeps '*' out for security)
+
+// CORS middleware: allow known frontends for development
 const ALLOWED_FRONTENDS = [
-  'https://grozo-backend.onrender.com',
   'https://grozo-home.netlify.app',
   'https://grozo-admin.netlify.app',
   'https://grozo-dashboard.netlify.app',
@@ -19,18 +19,30 @@ const ALLOWED_FRONTENDS = [
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && ALLOWED_FRONTENDS.includes(origin.replace(/\/$/, ''))) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+  const cleanOrigin = origin ? origin.replace(/\/$/, '') : '';
+  
+  // Allow requests if:
+  // 1. No origin (same-origin requests from backend itself), OR
+  // 2. Origin is in the whitelist, OR
+  // 3. Origin is localhost/127.0.0.1 (for local development)
+  const isLocalhost = cleanOrigin.startsWith('http://localhost') || cleanOrigin.startsWith('http://127.0.0.1');
+  const isAllowed = !origin || ALLOWED_FRONTENDS.includes(cleanOrigin) || isLocalhost;
+  
+  if (isAllowed) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
   }
+  
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
 function initDB() {
   if (!fs.existsSync(DB_PATH)) {
-    const initial = { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [] };
+    const initial = { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {} };
     fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
   }
 }
@@ -40,7 +52,7 @@ function readDB() {
     const raw = fs.readFileSync(DB_PATH, 'utf8') || '{}';
     return JSON.parse(raw);
   } catch (e) {
-    return { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [] };
+    return { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {} };
   }
 }
 
@@ -65,6 +77,7 @@ db.users = db.users || [];
 db.tokens = db.tokens || [];
 db.fees = db.fees || {};
 db.promos = db.promos || [];
+db.productOverrides = db.productOverrides || {};
 
 if (!db.users.some(u => u.role === 'admin')) {
   const admin = { id: 'u_admin', username: 'admin', passwordHash: sha256('admin123'), role: 'admin', name: 'Administrator' };
@@ -288,6 +301,28 @@ app.put('/api/fees', authMiddleware(['admin']), (req, res) => {
   db.fees = Object.assign({}, db.fees || {}, req.body || {});
   writeDB(db);
   res.json({ ok: true, fees: db.fees });
+});
+
+// --- Product Overrides (price/image/outOfStock) ---
+app.get('/api/product-overrides', (req, res) => {
+  const db = readDB();
+  res.json({ overrides: db.productOverrides || {} });
+});
+
+app.put('/api/product-overrides', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  db.productOverrides = Object.assign({}, db.productOverrides || {}, req.body || {});
+  writeDB(db);
+  res.json({ ok: true, overrides: db.productOverrides });
+});
+
+app.put('/api/product-overrides/:id', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  const id = req.params.id;
+  if (!db.productOverrides) db.productOverrides = {};
+  db.productOverrides[id] = Object.assign({}, db.productOverrides[id] || {}, req.body || {});
+  writeDB(db);
+  res.json({ ok: true, override: db.productOverrides[id] });
 });
 
 // fallback
