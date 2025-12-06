@@ -11,7 +11,7 @@ app.use(express.json());
 
 // CORS middleware: allow known frontends for development
 const ALLOWED_FRONTENDS = [
-  'https://grozo.online/',
+  'https://grozo.online',
   'https://grozo-admin.netlify.app',
   'https://grozo-dashboard.netlify.app',
   'https://grozo-deliverypartner.netlify.app'
