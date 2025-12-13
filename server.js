@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
 
 const DB_PATH = path.join(__dirname, 'db.json');
 const PORT = process.env.PORT || 3000;
@@ -330,13 +331,69 @@ app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
 // --- Frontend helper endpoints ---
 const FRONTEND_LINKS = {
-  home: 'https://grozo-home.netlify.app/',
+  home: 'https://grozo.online/',
   admin: 'https://grozo-admin.netlify.app/',
   dashboard: 'https://grozo-dashboard.netlify.app/',
   delivery: 'https://grozo-deliverypartner.netlify.app/'
 };
 
 app.get('/api/frontend-links', (req, res) => res.json(FRONTEND_LINKS));
+
+// --- Google sign-in verification endpoint ---
+const GOOGLE_CLIENT_ID = '1054365989272-e3t05dqp8k4vf3slii9ofdiujsdq7js0.apps.googleusercontent.com';
+
+function verifyGoogleIdToken(idToken) {
+  const url = 'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken);
+  return new Promise((resolve, reject) => {
+    https.get(url, (resp) => {
+      let data = '';
+      resp.on('data', (chunk) => { data += chunk; });
+      resp.on('end', () => {
+        try {
+          const json = JSON.parse(data || '{}');
+          if (json.error_description || json.error) return reject(new Error(json.error_description || json.error));
+          resolve(json);
+        } catch (e) { reject(e); }
+      });
+    }).on('error', (err) => reject(err));
+  });
+}
+
+app.post('/api/auth/google', async (req, res) => {
+  const { id_token } = req.body || {};
+  if (!id_token) return res.status(400).json({ error: 'id_token required' });
+  try {
+    const info = await verifyGoogleIdToken(id_token);
+    // validate audience
+    if (!info || info.aud !== GOOGLE_CLIENT_ID) return res.status(401).json({ error: 'Invalid id_token (aud mismatch)' });
+
+    const email = info.email;
+    const name = info.name || '';
+    const picture = info.picture || '';
+    const sub = info.sub || '';
+
+    const db = readDB();
+    let user = db.users.find(u => u.username === email && u.role === 'customer');
+    if (!user) {
+      user = { id: 'u_' + Date.now(), username: email, role: 'customer', name, picture, meta: { googleSub: sub } };
+      db.users.push(user);
+    } else {
+      // update fields
+      user.name = name || user.name;
+      user.picture = picture || user.picture;
+      user.meta = Object.assign({}, user.meta || {}, { googleSub: sub });
+    }
+
+    const token = generateToken();
+    db.tokens.push({ token, userId: user.id, createdAt: new Date().toISOString() });
+    writeDB(db);
+
+    res.json({ token, user: { id: user.id, name: user.name, email: user.username, picture: user.picture } });
+  } catch (err) {
+    console.error('Google token verification error:', err && err.message ? err.message : err);
+    res.status(500).json({ error: 'verification_failed', details: (err && err.message) || String(err) });
+  }
+});
 
 app.get('/go/home', (req, res) => res.redirect(FRONTEND_LINKS.home));
 app.get('/go/admin', (req, res) => res.redirect(FRONTEND_LINKS.admin));
