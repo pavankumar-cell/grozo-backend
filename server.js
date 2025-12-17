@@ -43,7 +43,7 @@ app.use((req, res, next) => {
 
 function initDB() {
   if (!fs.existsSync(DB_PATH)) {
-    const initial = { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {}, lastUpdate: Date.now() };
+    const initial = { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {} };
     fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
   }
 }
@@ -53,7 +53,7 @@ function readDB() {
     const raw = fs.readFileSync(DB_PATH, 'utf8') || '{}';
     return JSON.parse(raw);
   } catch (e) {
-    return { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {}, lastUpdate: Date.now() };
+    return { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {} };
   }
 }
 
@@ -79,7 +79,6 @@ db.tokens = db.tokens || [];
 db.fees = db.fees || {};
 db.promos = db.promos || [];
 db.productOverrides = db.productOverrides || {};
-db.lastUpdate = db.lastUpdate || Date.now();
 
 if (!db.users.some(u => u.role === 'admin')) {
   const admin = { id: 'u_admin', username: 'admin', passwordHash: sha256('admin123'), role: 'admin', name: 'Administrator' };
@@ -277,7 +276,6 @@ app.get('/api/promos', (req, res) => {
 app.put('/api/promos', authMiddleware(['admin']), (req, res) => {
   const db = readDB();
   db.promos = Array.isArray(req.body) ? req.body : (req.body.promos || []);
-  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, promos: db.promos });
 });
@@ -302,7 +300,6 @@ app.get('/api/fees', (req, res) => {
 app.put('/api/fees', authMiddleware(['admin']), (req, res) => {
   const db = readDB();
   db.fees = Object.assign({}, db.fees || {}, req.body || {});
-  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, fees: db.fees });
 });
@@ -316,7 +313,6 @@ app.get('/api/product-overrides', (req, res) => {
 app.put('/api/product-overrides', authMiddleware(['admin']), (req, res) => {
   const db = readDB();
   db.productOverrides = Object.assign({}, db.productOverrides || {}, req.body || {});
-  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, overrides: db.productOverrides });
 });
@@ -326,15 +322,8 @@ app.put('/api/product-overrides/:id', authMiddleware(['admin']), (req, res) => {
   const id = req.params.id;
   if (!db.productOverrides) db.productOverrides = {};
   db.productOverrides[id] = Object.assign({}, db.productOverrides[id] || {}, req.body || {});
-  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, override: db.productOverrides[id] });
-});
-
-// --- Last update timestamp for auto-refresh ---
-app.get('/api/last-update', (req, res) => {
-  const db = readDB();
-  res.json({ lastUpdate: db.lastUpdate || 0 });
 });
 
 // fallback
