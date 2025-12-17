@@ -53,7 +53,7 @@ function readDB() {
     const raw = fs.readFileSync(DB_PATH, 'utf8') || '{}';
     return JSON.parse(raw);
   } catch (e) {
-    return { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {} };
+    return { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {}, lastUpdate: Date.now() };
   }
 }
 
@@ -276,6 +276,7 @@ app.get('/api/promos', (req, res) => {
 app.put('/api/promos', authMiddleware(['admin']), (req, res) => {
   const db = readDB();
   db.promos = Array.isArray(req.body) ? req.body : (req.body.promos || []);
+  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, promos: db.promos });
 });
@@ -300,6 +301,7 @@ app.get('/api/fees', (req, res) => {
 app.put('/api/fees', authMiddleware(['admin']), (req, res) => {
   const db = readDB();
   db.fees = Object.assign({}, db.fees || {}, req.body || {});
+  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, fees: db.fees });
 });
@@ -313,6 +315,7 @@ app.get('/api/product-overrides', (req, res) => {
 app.put('/api/product-overrides', authMiddleware(['admin']), (req, res) => {
   const db = readDB();
   db.productOverrides = Object.assign({}, db.productOverrides || {}, req.body || {});
+  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, overrides: db.productOverrides });
 });
@@ -322,8 +325,15 @@ app.put('/api/product-overrides/:id', authMiddleware(['admin']), (req, res) => {
   const id = req.params.id;
   if (!db.productOverrides) db.productOverrides = {};
   db.productOverrides[id] = Object.assign({}, db.productOverrides[id] || {}, req.body || {});
+  db.lastUpdate = Date.now();
   writeDB(db);
   res.json({ ok: true, override: db.productOverrides[id] });
+});
+
+// Last update timestamp for polling
+app.get('/api/last-update', (req, res) => {
+  const db = readDB();
+  res.json({ lastUpdate: db.lastUpdate || Date.now() });
 });
 
 // fallback
