@@ -11,7 +11,10 @@ app.use(express.json());
 
 // Connect to MongoDB
 mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('Connected to MongoDB'))
+  .then(() => {
+    console.log('Connected to MongoDB');
+    initDB();
+  })
   .catch(err => console.error('MongoDB connection error:', err));
 
 // CORS middleware: allow known frontends for development
@@ -126,8 +129,6 @@ async function initDB() {
     console.error('Error initializing DB:', err);
   }
 }
-
-initDB();
 
 // --- auth middleware ---
 function authMiddleware(requiredRoles = []) {
