@@ -10,7 +10,7 @@ const app = express();
 app.use(express.json());
 
 // Connect to MongoDB
-mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(MONGODB_URI)
   .then(() => {
     console.log('Connected to MongoDB');
     initDB();
@@ -109,6 +109,14 @@ const Token = mongoose.model('Token', tokenSchema);
 const Fee = mongoose.model('Fee', feeSchema);
 const Promo = mongoose.model('Promo', promoSchema);
 const ProductOverride = mongoose.model('ProductOverride', productOverrideSchema);
+
+function sha256(text) {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function generateToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
 
 // Initialize default admin
 async function initDB() {
