@@ -130,7 +130,7 @@ async function initDB() {
 initDB();
 
 // --- auth middleware ---
-async function authMiddleware(requiredRoles = []) {
+function authMiddleware(requiredRoles = []) {
   return async (req, res, next) => {
     const auth = req.headers.authorization || '';
     const match = auth.match(/^Bearer\s+(\S+)$/i);
