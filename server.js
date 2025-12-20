@@ -1,21 +1,14 @@
 const express = require('express');
-const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 
+const DB_PATH = path.join(__dirname, 'db.json');
 const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.MONGODB_URI || 'your_mongodb_connection_string_here'; // Replace with your MongoDB Atlas URI
 
 const app = express();
 app.use(express.json());
-
-// Connect to MongoDB
-mongoose.connect(MONGODB_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
-    initDB();
-  })
-  .catch(err => console.error('MongoDB connection error:', err));
 
 // CORS middleware: allow known frontends for development
 const ALLOWED_FRONTENDS = [
@@ -48,67 +41,25 @@ app.use((req, res, next) => {
   next();
 });
 
-// Define Mongoose schemas
-const productSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  name: String,
-  price: Number,
-  // Add other fields as needed
-});
+function initDB() {
+  if (!fs.existsSync(DB_PATH)) {
+    const initial = { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {} };
+    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
+  }
+}
 
-const orderSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  date: String,
-  items: Array,
-  userName: String,
-  userPhone: String,
-  location: Object,
-  subtotal: Number,
-  fees: Object,
-  discount: Number,
-  total: Number,
-  status: String,
-  history: Array,
-});
+function readDB() {
+  try {
+    const raw = fs.readFileSync(DB_PATH, 'utf8') || '{}';
+    return JSON.parse(raw);
+  } catch (e) {
+    return { products: [], orders: [], users: [], tokens: [], fees: {}, promos: [], productOverrides: {}, lastUpdate: Date.now() };
+  }
+}
 
-const userSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  username: { type: String, required: true, unique: true },
-  passwordHash: String,
-  role: String,
-  name: String,
-  meta: Object,
-});
-
-const tokenSchema = new mongoose.Schema({
-  token: { type: String, required: true, unique: true },
-  userId: String,
-  createdAt: String,
-});
-
-const feeSchema = new mongoose.Schema({
-  _id: String, // Use _id for key
-  value: Object,
-});
-
-const promoSchema = new mongoose.Schema({
-  id: String,
-  // Add fields
-});
-
-const productOverrideSchema = new mongoose.Schema({
-  id: String,
-  // Add fields
-});
-
-// Models
-const Product = mongoose.model('Product', productSchema);
-const Order = mongoose.model('Order', orderSchema);
-const User = mongoose.model('User', userSchema);
-const Token = mongoose.model('Token', tokenSchema);
-const Fee = mongoose.model('Fee', feeSchema);
-const Promo = mongoose.model('Promo', promoSchema);
-const ProductOverride = mongoose.model('ProductOverride', productOverrideSchema);
+function writeDB(db) {
+  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+}
 
 function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -118,282 +69,223 @@ function generateToken() {
   return crypto.randomBytes(24).toString('hex');
 }
 
-// Initialize default admin
-async function initDB() {
-  try {
-    const adminExists = await User.findOne({ role: 'admin' });
-    if (!adminExists) {
-      const admin = new User({
-        id: 'u_admin',
-        username: 'admin',
-        passwordHash: sha256('admin123'),
-        role: 'admin',
-        name: 'Administrator'
-      });
-      await admin.save();
-      console.log('Created default admin user: username=admin password=admin123 (change immediately)');
-    }
-  } catch (err) {
-    console.error('Error initializing DB:', err);
-  }
+// initialize DB & default admin
+initDB();
+const db = readDB();
+db.products = db.products || [];
+db.orders = db.orders || [];
+db.users = db.users || [];
+db.tokens = db.tokens || [];
+db.fees = db.fees || {};
+db.promos = db.promos || [];
+db.productOverrides = db.productOverrides || {};
+
+if (!db.users.some(u => u.role === 'admin')) {
+  const admin = { id: 'u_admin', username: 'admin', passwordHash: sha256('admin123'), role: 'admin', name: 'Administrator' };
+  db.users.push(admin);
+  writeDB(db);
+  console.log('Created default admin user: username=admin password=admin123 (change immediately)');
 }
 
 // --- auth middleware ---
 function authMiddleware(requiredRoles = []) {
-  return async (req, res, next) => {
+  return (req, res, next) => {
     const auth = req.headers.authorization || '';
     const match = auth.match(/^Bearer\s+(\S+)$/i);
     if (!match) return res.status(401).json({ error: 'Missing token' });
     const token = match[1];
-    try {
-      const t = await Token.findOne({ token });
-      if (!t) return res.status(401).json({ error: 'Invalid token' });
-      const user = await User.findOne({ id: t.userId });
-      if (!user) return res.status(401).json({ error: 'User not found' });
-      if (requiredRoles.length && !requiredRoles.includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
-      req.user = user;
-      next();
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
+    const db = readDB();
+    const t = db.tokens.find(x => x.token === token);
+    if (!t) return res.status(401).json({ error: 'Invalid token' });
+    const user = db.users.find(u => u.id === t.userId);
+    if (!user) return res.status(401).json({ error: 'User not found' });
+    if (requiredRoles.length && !requiredRoles.includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
+    req.user = user;
+    next();
   };
 }
 
 // --- Auth routes ---
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-  try {
-    const user = await User.findOne({ username });
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    if (user.passwordHash !== sha256(password)) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = generateToken();
-    const newToken = new Token({ token, userId: user.id, createdAt: new Date().toISOString() });
-    await newToken.save();
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const db = readDB();
+  const user = db.users.find(u => u.username === username);
+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  if (user.passwordHash !== sha256(password)) return res.status(401).json({ error: 'Invalid credentials' });
+  const token = generateToken();
+  db.tokens.push({ token, userId: user.id, createdAt: new Date().toISOString() });
+  writeDB(db);
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
 });
 
 // Delivery registration (creates delivery user if not exists)
-app.post('/api/auth/register-delivery', async (req, res) => {
+app.post('/api/auth/register-delivery', (req, res) => {
   const { phone, name, vehicle, vehicleNo } = req.body || {};
   if (!phone || !name) return res.status(400).json({ error: 'phone and name required' });
-  try {
-    let user = await User.findOne({ username: phone, role: 'delivery' });
-    if (!user) {
-      user = new User({
-        id: 'u_' + Date.now(),
-        username: phone,
-        passwordHash: sha256(phone.slice(-4) || '0000'),
-        role: 'delivery',
-        name,
-        meta: { vehicle, vehicleNo }
-      });
-      await user.save();
-    }
-    const token = generateToken();
-    const newToken = new Token({ token, userId: user.id, createdAt: new Date().toISOString() });
-    await newToken.save();
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
+  const db = readDB();
+  let user = db.users.find(u => u.username === phone && u.role === 'delivery');
+  if (!user) {
+    user = { id: 'u_' + Date.now(), username: phone, passwordHash: sha256(phone.slice(-4) || '0000'), role: 'delivery', name, meta: { vehicle, vehicleNo } };
+    db.users.push(user);
+    writeDB(db);
   }
+  const token = generateToken();
+  db.tokens.push({ token, userId: user.id, createdAt: new Date().toISOString() });
+  writeDB(db);
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
 });
 
 // --- Products ---
-app.get('/api/products', async (req, res) => {
-  try {
-    const products = await Product.find({});
-    res.json({ products });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/products', (req, res) => {
+  const db = readDB();
+  res.json({ products: db.products || [] });
 });
 
-app.get('/api/products/:id', async (req, res) => {
-  try {
-    const p = await Product.findOne({ id: req.params.id });
-    if (!p) return res.status(404).json({ error: 'Product not found' });
-    res.json(p);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/products/:id', (req, res) => {
+  const db = readDB();
+  const p = db.products.find(x => x.id === req.params.id);
+  if (!p) return res.status(404).json({ error: 'Product not found' });
+  res.json(p);
 });
 
-app.post('/api/products', authMiddleware(['admin']), async (req, res) => {
+app.post('/api/products', authMiddleware(['admin']), (req, res) => {
   const data = req.body || {};
   if (!data.id || !data.name) return res.status(400).json({ error: 'id and name required' });
-  try {
-    const existing = await Product.findOne({ id: data.id });
-    if (existing) return res.status(400).json({ error: 'Product id already exists' });
-    const product = new Product(data);
-    await product.save();
-    res.json({ ok: true, product });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const db = readDB();
+  if (db.products.find(x => x.id === data.id)) return res.status(400).json({ error: 'Product id already exists' });
+  db.products.push(data);
+  writeDB(db);
+  res.json({ ok: true, product: data });
 });
 
-app.put('/api/products/:id', authMiddleware(['admin']), async (req, res) => {
-  try {
-    const product = await Product.findOneAndUpdate({ id: req.params.id }, req.body, { new: true });
-    if (!product) return res.status(404).json({ error: 'Not found' });
-    res.json({ ok: true, product });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.put('/api/products/:id', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  const idx = db.products.findIndex(x => x.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  db.products[idx] = Object.assign({}, db.products[idx], req.body);
+  writeDB(db);
+  res.json({ ok: true, product: db.products[idx] });
 });
 
-app.delete('/api/products/:id', authMiddleware(['admin']), async (req, res) => {
-  try {
-    await Product.deleteOne({ id: req.params.id });
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.delete('/api/products/:id', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  db.products = db.products.filter(x => x.id !== req.params.id);
+  writeDB(db);
+  res.json({ ok: true });
 });
 
 // --- Orders ---
-app.post('/api/orders', async (req, res) => {
+app.post('/api/orders', (req, res) => {
   const data = req.body || {};
   if (!data.items || !Array.isArray(data.items) || data.items.length === 0) return res.status(400).json({ error: 'items required' });
-  try {
-    const id = 'ORD' + Date.now().toString().slice(-8);
-    const order = new Order({
-      id,
-      date: new Date().toLocaleString(),
-      items: data.items,
-      userName: data.userName || '',
-      userPhone: data.userPhone || '',
-      location: data.location || null,
-      subtotal: data.subtotal || 0,
-      fees: data.fees || {},
-      discount: data.discount || 0,
-      total: data.total || 0,
-      status: 'pending',
-      history: [{ status: 'pending', at: new Date().toISOString() }]
-    });
-    await order.save();
-    res.json({ ok: true, order });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const db = readDB();
+  const id = 'ORD' + Date.now().toString().slice(-8);
+  const order = {
+    id,
+    date: new Date().toLocaleString(),
+    items: data.items,
+    userName: data.userName || '',
+    userPhone: data.userPhone || '',
+    location: data.location || null,
+    subtotal: data.subtotal || 0,
+    fees: data.fees || {},
+    discount: data.discount || 0,
+    total: data.total || 0,
+    status: 'pending',
+    history: [{ status: 'pending', at: new Date().toISOString() }]
+  };
+  db.orders.push(order);
+  writeDB(db);
+  // for realtime in-browser flows, write a last-dispatch like key isn't needed here; frontends can watch /api/orders
+  res.json({ ok: true, order });
 });
 
-app.get('/api/orders', authMiddleware(['admin','delivery']), async (req, res) => {
-  try {
-    const orders = await Order.find({});
-    res.json({ orders });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/orders', authMiddleware(['admin','delivery']), (req, res) => {
+  const db = readDB();
+  res.json({ orders: db.orders || [] });
 });
 
-app.get('/api/orders/:id', authMiddleware(['admin','delivery']), async (req, res) => {
-  try {
-    const order = await Order.findOne({ id: req.params.id });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    res.json(order);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/orders/:id', authMiddleware(['admin','delivery']), (req, res) => {
+  const db = readDB();
+  const o = db.orders.find(x => x.id === req.params.id);
+  if (!o) return res.status(404).json({ error: 'Order not found' });
+  res.json(o);
 });
 
-app.put('/api/orders/:id/status', authMiddleware(['admin','delivery']), async (req, res) => {
+app.put('/api/orders/:id/status', authMiddleware(['admin','delivery']), (req, res) => {
   const { status } = req.body || {};
   if (!status) return res.status(400).json({ error: 'status required' });
-  try {
-    const order = await Order.findOne({ id: req.params.id });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    order.status = status;
-    order.history = order.history || [];
-    order.history.push({ status, by: req.user.username, at: new Date().toISOString() });
-    await order.save();
-    res.json({ ok: true, order });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const db = readDB();
+  const idx = db.orders.findIndex(x => x.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Order not found' });
+  db.orders[idx].status = status;
+  db.orders[idx].history = db.orders[idx].history || [];
+  db.orders[idx].history.push({ status, by: req.user.username, at: new Date().toISOString() });
+  writeDB(db);
+  res.json({ ok: true, order: db.orders[idx] });
 });
 
-app.post('/api/orders/:id/assign-delivery', authMiddleware(['admin']), async (req, res) => {
+app.post('/api/orders/:id/assign-delivery', authMiddleware(['admin']), (req, res) => {
   const { deliveryUserId } = req.body || {};
   if (!deliveryUserId) return res.status(400).json({ error: 'deliveryUserId required' });
-  try {
-    const order = await Order.findOne({ id: req.params.id });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    const deliveryUser = await User.findOne({ id: deliveryUserId, role: 'delivery' });
-    if (!deliveryUser) return res.status(404).json({ error: 'Delivery user not found' });
-    order.assignedTo = { id: deliveryUser.id, username: deliveryUser.username, name: deliveryUser.name };
-    order.status = 'dispatched';
-    order.history = order.history || [];
-    order.history.push({ status: 'dispatched', by: req.user.username, at: new Date().toISOString() });
-    await order.save();
-    res.json({ ok: true, order });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const db = readDB();
+  const order = db.orders.find(x => x.id === req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  const deliveryUser = db.users.find(u => u.id === deliveryUserId && u.role === 'delivery');
+  if (!deliveryUser) return res.status(404).json({ error: 'Delivery user not found' });
+  order.assignedTo = { id: deliveryUser.id, username: deliveryUser.username, name: deliveryUser.name };
+  order.status = 'dispatched';
+  order.history = order.history || [];
+  order.history.push({ status: 'dispatched', by: req.user.username, at: new Date().toISOString() });
+  writeDB(db);
+  res.json({ ok: true, order });
 });
 
 // Find order by dispatch code (public)
-app.get('/api/orders/dispatch/:code', async (req, res) => {
+app.get('/api/orders/dispatch/:code', (req, res) => {
   const code = (req.params.code || '').toString();
   if (!code) return res.status(400).json({ error: 'code required' });
-  try {
-    const order = await Order.findOne({ 'dispatch.code': code });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    res.json({ order });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const db = readDB();
+  const order = (db.orders || []).find(o => o.dispatch && (o.dispatch.code === code || (o.dispatch.code||'').toString() === code));
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  res.json({ order });
 });
 
 // Generic order update (admin/delivery) - merges provided fields into order
-app.put('/api/orders/:id', authMiddleware(['admin','delivery']), async (req, res) => {
-  try {
-    const toMerge = req.body || {};
-    delete toMerge.id;
-    const order = await Order.findOneAndUpdate({ id: req.params.id }, { $set: toMerge }, { new: true });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    order.history = order.history || [];
-    order.history.push({ updatedBy: req.user.username, at: new Date().toISOString(), changes: Object.keys(toMerge) });
-    await order.save();
-    res.json({ ok: true, order });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.put('/api/orders/:id', authMiddleware(['admin','delivery']), (req, res) => {
+  const db = readDB();
+  const idx = db.orders.findIndex(x => x.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Order not found' });
+  const toMerge = req.body || {};
+  // prevent changing id
+  delete toMerge.id;
+  db.orders[idx] = Object.assign({}, db.orders[idx], toMerge);
+  db.orders[idx].history = db.orders[idx].history || [];
+  db.orders[idx].history.push({ updatedBy: req.user.username, at: new Date().toISOString(), changes: Object.keys(toMerge) });
+  writeDB(db);
+  res.json({ ok: true, order: db.orders[idx] });
 });
 
 // promos
-app.get('/api/promos', async (req, res) => {
-  try {
-    const promos = await Promo.find({});
-    res.json({ promos });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/promos', (req, res) => {
+  const db = readDB();
+  res.json({ promos: db.promos || [] });
 });
 
-app.put('/api/promos', authMiddleware(['admin']), async (req, res) => {
-  try {
-    await Promo.deleteMany({});
-    const promos = Array.isArray(req.body) ? req.body : (req.body.promos || []);
-    await Promo.insertMany(promos);
-    res.json({ ok: true, promos });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.put('/api/promos', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  db.promos = Array.isArray(req.body) ? req.body : (req.body.promos || []);
+  db.lastUpdate = Date.now();
+  writeDB(db);
+  res.json({ ok: true, promos: db.promos });
 });
 
 // --- Users list (admin) and deliveries (public list) ---
-app.get('/api/delivery-partners', authMiddleware(['admin']), async (req, res) => {
-  try {
-    const deliveries = await User.find({ role: 'delivery' });
-    res.json({ deliveries });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/delivery-partners', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  const deliveries = db.users.filter(u => u.role === 'delivery');
+  res.json({ deliveries });
 });
 
 app.get('/api/me', authMiddleware(['admin','delivery']), (req, res) => {
@@ -401,63 +293,47 @@ app.get('/api/me', authMiddleware(['admin','delivery']), (req, res) => {
 });
 
 // --- simple admin endpoints for fees/promos ---
-app.get('/api/fees', async (req, res) => {
-  try {
-    const feeDoc = await Fee.findOne({ _id: 'fees' });
-    res.json({ fees: feeDoc ? feeDoc.value : {} });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/fees', (req, res) => {
+  const db = readDB();
+  res.json({ fees: db.fees || {} });
 });
 
-app.put('/api/fees', authMiddleware(['admin']), async (req, res) => {
-  try {
-    const fees = req.body || {};
-    await Fee.findOneAndUpdate({ _id: 'fees' }, { value: fees }, { upsert: true });
-    res.json({ ok: true, fees });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.put('/api/fees', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  db.fees = Object.assign({}, db.fees || {}, req.body || {});
+  db.lastUpdate = Date.now();
+  writeDB(db);
+  res.json({ ok: true, fees: db.fees });
 });
 
 // --- Product Overrides (price/image/outOfStock) ---
-app.get('/api/product-overrides', async (req, res) => {
-  try {
-    const overrides = await ProductOverride.find({});
-    const overridesObj = {};
-    overrides.forEach(o => overridesObj[o.id] = o);
-    res.json({ overrides: overridesObj });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.get('/api/product-overrides', (req, res) => {
+  const db = readDB();
+  res.json({ overrides: db.productOverrides || {} });
 });
 
-app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) => {
-  try {
-    const overrides = req.body || {};
-    await ProductOverride.deleteMany({});
-    const docs = Object.keys(overrides).map(id => ({ id, ...overrides[id] }));
-    await ProductOverride.insertMany(docs);
-    res.json({ ok: true, overrides });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.put('/api/product-overrides', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  db.productOverrides = Object.assign({}, db.productOverrides || {}, req.body || {});
+  db.lastUpdate = Date.now();
+  writeDB(db);
+  res.json({ ok: true, overrides: db.productOverrides });
 });
 
-app.put('/api/product-overrides/:id', authMiddleware(['admin']), async (req, res) => {
-  try {
-    const id = req.params.id;
-    const update = req.body || {};
-    const override = await ProductOverride.findOneAndUpdate({ id }, update, { upsert: true, new: true });
-    res.json({ ok: true, override });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.put('/api/product-overrides/:id', authMiddleware(['admin']), (req, res) => {
+  const db = readDB();
+  const id = req.params.id;
+  if (!db.productOverrides) db.productOverrides = {};
+  db.productOverrides[id] = Object.assign({}, db.productOverrides[id] || {}, req.body || {});
+  db.lastUpdate = Date.now();
+  writeDB(db);
+  res.json({ ok: true, override: db.productOverrides[id] });
 });
 
 // Last update timestamp for polling
 app.get('/api/last-update', (req, res) => {
-  res.json({ lastUpdate: Date.now() });
+  const db = readDB();
+  res.json({ lastUpdate: db.lastUpdate || Date.now() });
 });
 
 // fallback
@@ -506,28 +382,21 @@ app.post('/api/auth/google', async (req, res) => {
     const picture = info.picture || '';
     const sub = info.sub || '';
 
-    let user = await User.findOne({ username: email, role: 'customer' });
+    const db = readDB();
+    let user = db.users.find(u => u.username === email && u.role === 'customer');
     if (!user) {
-      user = new User({
-        id: 'u_' + Date.now(),
-        username: email,
-        role: 'customer',
-        name,
-        picture,
-        meta: { googleSub: sub }
-      });
-      await user.save();
+      user = { id: 'u_' + Date.now(), username: email, role: 'customer', name, picture, meta: { googleSub: sub } };
+      db.users.push(user);
     } else {
       // update fields
       user.name = name || user.name;
       user.picture = picture || user.picture;
       user.meta = Object.assign({}, user.meta || {}, { googleSub: sub });
-      await user.save();
     }
 
     const token = generateToken();
-    const newToken = new Token({ token, userId: user.id, createdAt: new Date().toISOString() });
-    await newToken.save();
+    db.tokens.push({ token, userId: user.id, createdAt: new Date().toISOString() });
+    writeDB(db);
 
     res.json({ token, user: { id: user.id, name: user.name, email: user.username, picture: user.picture } });
   } catch (err) {
