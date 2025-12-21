@@ -95,13 +95,13 @@ const feeSchema = new mongoose.Schema({
 
 const promoSchema = new mongoose.Schema({
   id: String,
-  // Add fields
-});
+  // allow arbitrary promo fields (discount, type, meta etc.)
+}, { strict: false });
 
 const productOverrideSchema = new mongoose.Schema({
   id: String,
-  // Add fields
-});
+  // allow arbitrary override fields (price, outOfStock, limit, image, etc.)
+}, { strict: false });
 
 // Models
 const Product = mongoose.model('Product', productSchema);
