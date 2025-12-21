@@ -52,11 +52,11 @@ const feeSchema = new mongoose.Schema({
 
 const promoSchema = new mongoose.Schema({
   id: String,
-}, { strict: false });
+});
 
 const productOverrideSchema = new mongoose.Schema({
   id: String,
-}, { strict: false });
+});
 
 const Product = mongoose.model('Product', productSchema);
 const Order = mongoose.model('Order', orderSchema);
@@ -124,3 +124,4 @@ async function migrate() {
 }
 
 migrate();
+
