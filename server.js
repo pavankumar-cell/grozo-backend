@@ -2,7 +2,10 @@ const express = require('express');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const https = require('https');
-require('dotenv').config();
+
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
 
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://bpavan422_db_user:s5mIhGPgtgF7F9TH@grozo-cluster.asew17j.mongodb.net/?appName=grozo-cluster'; // Replace with your MongoDB Atlas URI
