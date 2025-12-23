@@ -71,6 +71,8 @@ const orderSchema = new mongoose.Schema({
   total: Number,
   status: String,
   history: Array,
+  assignedTo: Object,
+  deliveryPartnerLocation: Object, // { latitude, longitude, lastUpdated, name }
 });
 
 const userSchema = new mongoose.Schema({
@@ -349,6 +351,62 @@ app.get('/api/orders/dispatch/:code', async (req, res) => {
     const order = await Order.findOne({ 'dispatch.code': code });
     if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json({ order });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update delivery partner location for an order
+app.put('/api/orders/:id/delivery-location', authMiddleware(['delivery']), async (req, res) => {
+  const { latitude, longitude, name } = req.body || {};
+  if (!latitude || !longitude) return res.status(400).json({ error: 'latitude and longitude required' });
+  
+  try {
+    const order = await Order.findOne({ id: req.params.id });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    
+    // Check if this delivery user is assigned to this order
+    if (!order.assignedTo || order.assignedTo.id !== req.user.id) {
+      return res.status(403).json({ error: 'Not assigned to this order' });
+    }
+    
+    order.deliveryPartnerLocation = {
+      latitude: parseFloat(latitude),
+      longitude: parseFloat(longitude),
+      name: name || req.user.name,
+      lastUpdated: new Date().toISOString()
+    };
+    
+    await order.save();
+    res.json({ ok: true, location: order.deliveryPartnerLocation });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/orders/:id/delivery-location', async (req, res) => {
+  try {
+    const order = await Order.findOne({ id: req.params.id });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    
+    if (!order.deliveryPartnerLocation) {
+      return res.status(404).json({ error: 'Location not available' });
+    }
+    
+    res.json({ location: order.deliveryPartnerLocation });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get orders for a specific user (by phone)
+app.get('/api/orders/user/:phone', async (req, res) => {
+  const phone = req.params.phone;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  
+  try {
+    const orders = await Order.find({ userPhone: phone }).sort({ date: -1 });
+    res.json({ orders });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
