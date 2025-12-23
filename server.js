@@ -73,6 +73,8 @@ const orderSchema = new mongoose.Schema({
   history: Array,
   assignedTo: Object,
   deliveryPartnerLocation: Object, // { latitude, longitude, lastUpdated, name }
+  dispatch: Object, // { code, sentAt }
+  deliveryCode: String, // 4-digit code for delivery verification
 });
 
 const userSchema = new mongoose.Schema({
