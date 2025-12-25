@@ -348,12 +348,15 @@ app.post('/api/orders/:id/assign-delivery', authMiddleware(['admin']), async (re
 // Find order by dispatch code (public)
 app.get('/api/orders/dispatch/:code', async (req, res) => {
   const code = (req.params.code || '').toString();
+  console.log('GET dispatch code:', code);
   if (!code) return res.status(400).json({ error: 'code required' });
   try {
     const order = await Order.findOne({ 'dispatch.code': code });
+    console.log('Found order for code', code, order ? order.id : 'not found');
     if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json({ order });
   } catch (err) {
+    console.error('GET dispatch error', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -419,13 +422,19 @@ app.put('/api/orders/:id', authMiddleware(['admin','delivery']), async (req, res
   try {
     const toMerge = req.body || {};
     delete toMerge.id;
+    console.log('PUT order', req.params.id, 'toMerge:', toMerge);
     const order = await Order.findOneAndUpdate({ id: req.params.id }, { $set: toMerge }, { new: true });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order) {
+      console.log('Order not found for PUT', req.params.id);
+      return res.status(404).json({ error: 'Not found' });
+    }
     order.history = order.history || [];
     order.history.push({ updatedBy: req.user.username, at: new Date().toISOString(), changes: Object.keys(toMerge) });
     await order.save();
+    console.log('Order updated', order.id, 'dispatch:', order.dispatch);
     res.json({ ok: true, order });
   } catch (err) {
+    console.error('PUT order error', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
