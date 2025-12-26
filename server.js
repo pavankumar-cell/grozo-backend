@@ -25,7 +25,7 @@ mongoose.connect(MONGODB_URI)
   .catch(err => console.error('MongoDB connection error:', err));
 
 // CORS middleware: allow known frontends for development
-const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypanel.netlify.app').split(',');
+const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypartner.netlify.app').split(',');
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -537,7 +537,7 @@ const FRONTEND_LINKS = {
   home: process.env.FRONTEND_LINKS_HOME || 'https://grozo.online/',
   admin: process.env.FRONTEND_LINKS_ADMIN || 'https://grozo-admin.netlify.app/',
   dashboard: process.env.FRONTEND_LINKS_DASHBOARD || 'https://grozo-dashboard.netlify.app/',
-  delivery: process.env.FRONTEND_LINKS_DELIVERY || 'https://grozo-deliverypanel.netlify.app/'
+  delivery: process.env.FRONTEND_LINKS_DELIVERY || 'https://grozo-deliverypartner.netlify.app/'
 };
 
 app.get('/api/frontend-links', (req, res) => res.json(FRONTEND_LINKS));
