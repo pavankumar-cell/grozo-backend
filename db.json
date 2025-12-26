@@ -1,4 +1,5 @@
 {
+  "lastUpdate": 1734470400000,
   "products": [],
   "orders": [
     {
@@ -144,5 +145,10 @@
     }
   ],
   "fees": {},
-  "promos": []
+  "promos": [],
+  "productOverrides": {
+    "tomato_veg": {
+      "qtyLimit": 5
+    }
+  }
 }
