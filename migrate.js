@@ -29,6 +29,15 @@ const orderSchema = new mongoose.Schema({
   total: Number,
   status: String,
   history: Array,
+  // Delivery partner information
+  pickedUpByName: String,
+  pickedUpByPhone: String,
+  pickedUpAt: String,
+  deliveredByName: String,
+  deliveredByPhone: String,
+  deliveredAt: String,
+  deliveryPartnerVehicle: String,
+  deliveryPartnerVehicleNo: String,
 });
 
 const userSchema = new mongoose.Schema({
@@ -156,6 +165,15 @@ const orderSchema = new mongoose.Schema({
   total: Number,
   status: String,
   history: Array,
+  // Delivery partner information
+  pickedUpByName: String,
+  pickedUpByPhone: String,
+  pickedUpAt: String,
+  deliveredByName: String,
+  deliveredByPhone: String,
+  deliveredAt: String,
+  deliveryPartnerVehicle: String,
+  deliveryPartnerVehicleNo: String,
 });
 
 const userSchema = new mongoose.Schema({
