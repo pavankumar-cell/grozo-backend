@@ -75,6 +75,15 @@ const orderSchema = new mongoose.Schema({
   deliveryPartnerLocation: Object, // { latitude, longitude, lastUpdated, name }
   dispatch: Object, // { code, sentAt }
   deliveryCode: String, // 4-digit code for delivery verification
+  // Delivery partner information
+  pickedUpByName: String,
+  pickedUpByPhone: String,
+  pickedUpAt: String,
+  deliveredByName: String,
+  deliveredByPhone: String,
+  deliveredAt: String,
+  deliveryPartnerVehicle: String,
+  deliveryPartnerVehicleNo: String,
 });
 
 const userSchema = new mongoose.Schema({
