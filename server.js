@@ -85,6 +85,9 @@ const orderSchema = new mongoose.Schema({
   deliveredAt: String,
   deliveryPartnerVehicle: String,
   deliveryPartnerVehicleNo: String,
+  darkStoreId: String,
+  darkStoreName: String,
+  darkStore: Object,
 });
 
 const userSchema = new mongoose.Schema({
@@ -292,6 +295,9 @@ app.post('/api/orders', async (req, res) => {
       fees: data.fees || {},
       discount: data.discount || 0,
       total: data.total || 0,
+      darkStoreId: data.darkStoreId || '',
+      darkStoreName: data.darkStoreName || '',
+      darkStore: data.darkStore || null,
       status: 'pending',
       history: [{ status: 'pending', at: new Date().toISOString() }]
     });
