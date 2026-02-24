@@ -106,19 +106,17 @@ const tokenSchema = new mongoose.Schema({
 });
 
 const feeSchema = new mongoose.Schema({
-  _id: String, // Use _id for key (fees_<locationId>)
+  _id: String, // Use _id for key
   value: Object,
 });
 
 const promoSchema = new mongoose.Schema({
   id: String,
-  locationId: { type: String, default: 'default', index: true },
   // allow arbitrary promo fields (discount, type, meta etc.)
 }, { strict: false });
 
 const productOverrideSchema = new mongoose.Schema({
   id: String,
-  locationId: { type: String, default: 'default', index: true },
   // allow arbitrary override fields (price, outOfStock, limit, image, etc.)
 }, { strict: false });
 
@@ -137,11 +135,6 @@ function sha256(text) {
 
 function generateToken() {
   return crypto.randomBytes(24).toString('hex');
-}
-
-function getLocationId(req) {
-  const raw = (req && (req.query && req.query.locationId)) || (req && req.body && req.body.locationId);
-  return (typeof raw === 'string' && raw.trim().length) ? raw.trim() : 'default';
 }
 
 // Initialize default admin
@@ -457,11 +450,7 @@ app.put('/api/orders/:id', authMiddleware(['admin','delivery']), async (req, res
 // promos
 app.get('/api/promos', async (req, res) => {
   try {
-    const locationId = getLocationId(req);
-    const filter = (locationId === 'default')
-      ? { $or: [{ locationId: 'default' }, { locationId: { $exists: false } }] }
-      : { locationId };
-    const promos = await Promo.find(filter);
+    const promos = await Promo.find({});
     res.json({ promos });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -470,16 +459,11 @@ app.get('/api/promos', async (req, res) => {
 
 app.put('/api/promos', authMiddleware(['admin']), async (req, res) => {
   try {
-    const locationId = getLocationId(req);
-    const filter = (locationId === 'default')
-      ? { $or: [{ locationId: 'default' }, { locationId: { $exists: false } }] }
-      : { locationId };
-    await Promo.deleteMany(filter);
+    await Promo.deleteMany({});
     const promos = Array.isArray(req.body) ? req.body : (req.body.promos || []);
-    const docs = promos.map(promo => ({ locationId, ...promo }));
-    await Promo.insertMany(docs);
+    await Promo.insertMany(promos);
     globalLastUpdate = Date.now();
-    res.json({ ok: true, promos: docs });
+    res.json({ ok: true, promos });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -502,11 +486,7 @@ app.get('/api/me', authMiddleware(['admin','delivery']), (req, res) => {
 // --- simple admin endpoints for fees/promos ---
 app.get('/api/fees', async (req, res) => {
   try {
-    const locationId = getLocationId(req);
-    let feeDoc = await Fee.findOne({ _id: `fees_${locationId}` });
-    if (!feeDoc && locationId === 'default') {
-      feeDoc = await Fee.findOne({ _id: 'fees' });
-    }
+    const feeDoc = await Fee.findOne({ _id: 'fees' });
     res.json({ fees: feeDoc ? feeDoc.value : {} });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -515,12 +495,8 @@ app.get('/api/fees', async (req, res) => {
 
 app.put('/api/fees', authMiddleware(['admin']), async (req, res) => {
   try {
-    const locationId = getLocationId(req);
     const fees = req.body || {};
-    await Fee.findOneAndUpdate({ _id: `fees_${locationId}` }, { value: fees }, { upsert: true });
-    if (locationId === 'default') {
-      await Fee.findOneAndUpdate({ _id: 'fees' }, { value: fees }, { upsert: true });
-    }
+    await Fee.findOneAndUpdate({ _id: 'fees' }, { value: fees }, { upsert: true });
     globalLastUpdate = Date.now();
     res.json({ ok: true, fees });
   } catch (err) {
@@ -531,11 +507,7 @@ app.put('/api/fees', authMiddleware(['admin']), async (req, res) => {
 // --- Product Overrides (price/image/outOfStock) ---
 app.get('/api/product-overrides', async (req, res) => {
   try {
-    const locationId = getLocationId(req);
-    const filter = (locationId === 'default')
-      ? { $or: [{ locationId: 'default' }, { locationId: { $exists: false } }] }
-      : { locationId };
-    const overrides = await ProductOverride.find(filter);
+    const overrides = await ProductOverride.find({});
     const overridesObj = {};
     overrides.forEach(o => overridesObj[o.id] = o);
     res.json({ overrides: overridesObj });
@@ -546,13 +518,9 @@ app.get('/api/product-overrides', async (req, res) => {
 
 app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) => {
   try {
-    const locationId = getLocationId(req);
     const overrides = req.body || {};
-    const filter = (locationId === 'default')
-      ? { $or: [{ locationId: 'default' }, { locationId: { $exists: false } }] }
-      : { locationId };
-    await ProductOverride.deleteMany(filter);
-    const docs = Object.keys(overrides).map(id => ({ id, locationId, ...overrides[id] }));
+    await ProductOverride.deleteMany({});
+    const docs = Object.keys(overrides).map(id => ({ id, ...overrides[id] }));
     await ProductOverride.insertMany(docs);
     globalLastUpdate = Date.now();
     res.json({ ok: true, overrides });
@@ -563,13 +531,9 @@ app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) =>
 
 app.put('/api/product-overrides/:id', authMiddleware(['admin']), async (req, res) => {
   try {
-    const locationId = getLocationId(req);
     const id = req.params.id;
     const update = req.body || {};
-    const filter = (locationId === 'default')
-      ? { id, $or: [{ locationId: 'default' }, { locationId: { $exists: false } }] }
-      : { id, locationId };
-    const override = await ProductOverride.findOneAndUpdate(filter, { ...update, locationId }, { upsert: true, new: true });
+    const override = await ProductOverride.findOneAndUpdate({ id }, update, { upsert: true, new: true });
     globalLastUpdate = Date.now();
     res.json({ ok: true, override });
   } catch (err) {
