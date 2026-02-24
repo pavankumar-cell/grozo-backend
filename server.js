@@ -24,22 +24,49 @@ mongoose.connect(MONGODB_URI)
   })
   .catch(err => console.error('MongoDB connection error:', err));
 
-// CORS middleware: allow known frontends for development
-const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypartner.netlify.app').split(',');
+// CORS middleware: allow known frontends for development + hosted wildcard variants
+const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypartner.netlify.app,https://*.netlify.app')
+  .split(',')
+  .map(v => v.trim())
+  .filter(Boolean);
+
+function normalizeOrigin(value) {
+  return (value || '').toString().trim().replace(/\/$/, '').toLowerCase();
+}
+
+function isOriginAllowed(origin) {
+  const cleanOrigin = normalizeOrigin(origin);
+  if (!cleanOrigin) return true;
+
+  // allow localhost/127.0.0.1 for local development
+  if (cleanOrigin.startsWith('http://localhost') || cleanOrigin.startsWith('http://127.0.0.1')) {
+    return true;
+  }
+
+  return ALLOWED_FRONTENDS.some(pattern => {
+    const normalizedPattern = normalizeOrigin(pattern);
+    if (!normalizedPattern) return false;
+
+    if (normalizedPattern.includes('*')) {
+      // wildcard host support, e.g. https://*.netlify.app
+      const regexSafe = normalizedPattern
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '.*');
+      const regex = new RegExp(`^${regexSafe}$`, 'i');
+      return regex.test(cleanOrigin);
+    }
+
+    return cleanOrigin === normalizedPattern;
+  });
+}
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  const cleanOrigin = origin ? origin.replace(/\/$/, '') : '';
-  
-  // Allow requests if:
-  // 1. No origin (same-origin requests from backend itself), OR
-  // 2. Origin is in the whitelist, OR
-  // 3. Origin is localhost/127.0.0.1 (for local development)
-  const isLocalhost = cleanOrigin.startsWith('http://localhost') || cleanOrigin.startsWith('http://127.0.0.1');
-  const isAllowed = !origin || ALLOWED_FRONTENDS.includes(cleanOrigin) || isLocalhost;
+  const isAllowed = isOriginAllowed(origin);
   
   if (isAllowed) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Vary', 'Origin');
   }
   
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
