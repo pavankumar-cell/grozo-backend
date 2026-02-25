@@ -174,6 +174,12 @@ function sanitizeOverrideDoc(doc) {
   return rest;
 }
 
+function sanitizeIncomingOverrideValue(value) {
+  const src = (value && typeof value === 'object') ? value : {};
+  const { _id, __v, id, storeKey, storeName, ...rest } = src;
+  return rest;
+}
+
 // Initialize default admin
 async function initDB() {
   try {
@@ -596,7 +602,7 @@ app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) =>
 
     await ProductOverride.deleteMany(getStoreQuery(storeKey));
 
-    const docs = Object.keys(overrides).map(id => ({ id, storeKey: storeKey || null, storeName: storeName || null, ...overrides[id] }));
+    const docs = Object.keys(overrides).map(id => ({ id, ...sanitizeIncomingOverrideValue(overrides[id]), storeKey: storeKey || null, storeName: storeName || null }));
     if (docs.length > 0) {
       await ProductOverride.insertMany(docs);
     }
@@ -614,7 +620,7 @@ app.put('/api/product-overrides/:id', authMiddleware(['admin']), async (req, res
     const id = req.params.id;
     const update = req.body || {};
     const query = storeKey ? { id, storeKey } : { id, ...getGlobalStoreQuery() };
-    const nextValue = { ...update, id, storeKey: storeKey || null, storeName: storeName || null };
+    const nextValue = { ...sanitizeIncomingOverrideValue(update), id, storeKey: storeKey || null, storeName: storeName || null };
     const override = await ProductOverride.findOneAndUpdate(query, nextValue, { upsert: true, new: true });
     globalLastUpdate = Date.now();
     res.json({ ok: true, override, store: storeName || null, storeKey: storeKey || null });
