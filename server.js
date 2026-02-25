@@ -107,16 +107,22 @@ const tokenSchema = new mongoose.Schema({
 
 const feeSchema = new mongoose.Schema({
   _id: String, // Use _id for key
+  storeKey: String,
+  storeName: String,
   value: Object,
 });
 
 const promoSchema = new mongoose.Schema({
   id: String,
+  storeKey: String,
+  storeName: String,
   // allow arbitrary promo fields (discount, type, meta etc.)
 }, { strict: false });
 
 const productOverrideSchema = new mongoose.Schema({
   id: String,
+  storeKey: String,
+  storeName: String,
   // allow arbitrary override fields (price, outOfStock, limit, image, etc.)
 }, { strict: false });
 
@@ -135,6 +141,37 @@ function sha256(text) {
 
 function generateToken() {
   return crypto.randomBytes(24).toString('hex');
+}
+
+function normalizeStoreName(value) {
+  return (value || '').toString().trim().replace(/\s+/g, ' ');
+}
+
+function toStoreKey(storeName) {
+  return normalizeStoreName(storeName).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function getStoreMetaFromRequest(req) {
+  const queryStore = req && req.query ? req.query.store : '';
+  const bodyStore = req && req.body && !Array.isArray(req.body) ? req.body.store : '';
+  const storeName = normalizeStoreName(queryStore || bodyStore || '');
+  const storeKey = toStoreKey(storeName);
+  return { storeName, storeKey };
+}
+
+function getGlobalStoreQuery() {
+  return { $or: [{ storeKey: { $exists: false } }, { storeKey: null }, { storeKey: '' }] };
+}
+
+function getStoreQuery(storeKey) {
+  if (!storeKey) return getGlobalStoreQuery();
+  return { storeKey };
+}
+
+function sanitizeOverrideDoc(doc) {
+  const data = doc && typeof doc.toObject === 'function' ? doc.toObject() : (doc || {});
+  const { _id, __v, id, storeKey, storeName, ...rest } = data;
+  return rest;
 }
 
 // Initialize default admin
@@ -450,8 +487,14 @@ app.put('/api/orders/:id', authMiddleware(['admin','delivery']), async (req, res
 // promos
 app.get('/api/promos', async (req, res) => {
   try {
-    const promos = await Promo.find({});
-    res.json({ promos });
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    let promos = await Promo.find(getStoreQuery(storeKey));
+
+    if (storeKey && promos.length === 0) {
+      promos = await Promo.find(getGlobalStoreQuery());
+    }
+
+    res.json({ promos, store: storeName || null, storeKey: storeKey || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -459,11 +502,17 @@ app.get('/api/promos', async (req, res) => {
 
 app.put('/api/promos', authMiddleware(['admin']), async (req, res) => {
   try {
-    await Promo.deleteMany({});
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    await Promo.deleteMany(getStoreQuery(storeKey));
     const promos = Array.isArray(req.body) ? req.body : (req.body.promos || []);
-    await Promo.insertMany(promos);
+
+    if (promos.length > 0) {
+      const docs = promos.map(p => ({ ...p, storeKey: storeKey || null, storeName: storeName || null }));
+      await Promo.insertMany(docs);
+    }
+
     globalLastUpdate = Date.now();
-    res.json({ ok: true, promos });
+    res.json({ ok: true, promos, store: storeName || null, storeKey: storeKey || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -486,8 +535,15 @@ app.get('/api/me', authMiddleware(['admin','delivery']), (req, res) => {
 // --- simple admin endpoints for fees/promos ---
 app.get('/api/fees', async (req, res) => {
   try {
-    const feeDoc = await Fee.findOne({ _id: 'fees' });
-    res.json({ fees: feeDoc ? feeDoc.value : {} });
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    const storeDocId = storeKey ? `fees__${storeKey}` : 'fees';
+
+    let feeDoc = await Fee.findOne({ _id: storeDocId });
+    if (!feeDoc && storeKey) {
+      feeDoc = await Fee.findOne({ _id: 'fees' });
+    }
+
+    res.json({ fees: feeDoc ? feeDoc.value : {}, store: storeName || null, storeKey: storeKey || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -495,10 +551,18 @@ app.get('/api/fees', async (req, res) => {
 
 app.put('/api/fees', authMiddleware(['admin']), async (req, res) => {
   try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
     const fees = req.body || {};
-    await Fee.findOneAndUpdate({ _id: 'fees' }, { value: fees }, { upsert: true });
+    const storeDocId = storeKey ? `fees__${storeKey}` : 'fees';
+
+    await Fee.findOneAndUpdate(
+      { _id: storeDocId },
+      { _id: storeDocId, storeKey: storeKey || null, storeName: storeName || null, value: fees },
+      { upsert: true }
+    );
+
     globalLastUpdate = Date.now();
-    res.json({ ok: true, fees });
+    res.json({ ok: true, fees, store: storeName || null, storeKey: storeKey || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -507,10 +571,19 @@ app.put('/api/fees', authMiddleware(['admin']), async (req, res) => {
 // --- Product Overrides (price/image/outOfStock) ---
 app.get('/api/product-overrides', async (req, res) => {
   try {
-    const overrides = await ProductOverride.find({});
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    let overrides = await ProductOverride.find(getStoreQuery(storeKey));
+
+    if (storeKey && overrides.length === 0) {
+      overrides = await ProductOverride.find(getGlobalStoreQuery());
+    }
+
     const overridesObj = {};
-    overrides.forEach(o => overridesObj[o.id] = o);
-    res.json({ overrides: overridesObj });
+    overrides.forEach(o => {
+      overridesObj[o.id] = sanitizeOverrideDoc(o);
+    });
+
+    res.json({ overrides: overridesObj, store: storeName || null, storeKey: storeKey || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -518,12 +591,18 @@ app.get('/api/product-overrides', async (req, res) => {
 
 app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) => {
   try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
     const overrides = req.body || {};
-    await ProductOverride.deleteMany({});
-    const docs = Object.keys(overrides).map(id => ({ id, ...overrides[id] }));
-    await ProductOverride.insertMany(docs);
+
+    await ProductOverride.deleteMany(getStoreQuery(storeKey));
+
+    const docs = Object.keys(overrides).map(id => ({ id, storeKey: storeKey || null, storeName: storeName || null, ...overrides[id] }));
+    if (docs.length > 0) {
+      await ProductOverride.insertMany(docs);
+    }
+
     globalLastUpdate = Date.now();
-    res.json({ ok: true, overrides });
+    res.json({ ok: true, overrides, store: storeName || null, storeKey: storeKey || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -531,11 +610,14 @@ app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) =>
 
 app.put('/api/product-overrides/:id', authMiddleware(['admin']), async (req, res) => {
   try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
     const id = req.params.id;
     const update = req.body || {};
-    const override = await ProductOverride.findOneAndUpdate({ id }, update, { upsert: true, new: true });
+    const query = storeKey ? { id, storeKey } : { id, ...getGlobalStoreQuery() };
+    const nextValue = { ...update, id, storeKey: storeKey || null, storeName: storeName || null };
+    const override = await ProductOverride.findOneAndUpdate(query, nextValue, { upsert: true, new: true });
     globalLastUpdate = Date.now();
-    res.json({ ok: true, override });
+    res.json({ ok: true, override, store: storeName || null, storeKey: storeKey || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
