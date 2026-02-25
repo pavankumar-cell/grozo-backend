@@ -135,6 +135,9 @@ const Fee = mongoose.model('Fee', feeSchema);
 const Promo = mongoose.model('Promo', promoSchema);
 const ProductOverride = mongoose.model('ProductOverride', productOverrideSchema);
 
+const DEFAULT_STORE_KEY = 'default_location';
+const DEFAULT_STORE_NAME = 'Default Location';
+
 function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
 }
@@ -154,8 +157,9 @@ function toStoreKey(storeName) {
 function getStoreMetaFromRequest(req) {
   const queryStore = req && req.query ? req.query.store : '';
   const bodyStore = req && req.body && !Array.isArray(req.body) ? req.body.store : '';
+  const bodyStoreKey = req && req.body && !Array.isArray(req.body) ? (req.body.storeKey || '') : '';
   const storeName = normalizeStoreName(queryStore || bodyStore || '');
-  const storeKey = toStoreKey(storeName);
+  const storeKey = toStoreKey(storeName || bodyStoreKey);
   return { storeName, storeKey };
 }
 
@@ -178,6 +182,14 @@ function sanitizeIncomingOverrideValue(value) {
   const src = (value && typeof value === 'object') ? value : {};
   const { _id, __v, id, storeKey, storeName, ...rest } = src;
   return rest;
+}
+
+function getEffectiveProductOverrideStoreMeta(req) {
+  const { storeKey, storeName } = getStoreMetaFromRequest(req);
+  if (storeKey) {
+    return { storeKey, storeName: storeName || storeKey };
+  }
+  return { storeKey: DEFAULT_STORE_KEY, storeName: DEFAULT_STORE_NAME };
 }
 
 // Initialize default admin
@@ -578,10 +590,32 @@ app.put('/api/fees', authMiddleware(['admin']), async (req, res) => {
 app.get('/api/product-overrides', async (req, res) => {
   try {
     const { storeKey, storeName } = getStoreMetaFromRequest(req);
-    let overrides = await ProductOverride.find(getStoreQuery(storeKey));
+    let resolvedStoreKey = null;
+    let resolvedStoreName = null;
+    let overrides = [];
 
-    if (storeKey && overrides.length === 0) {
+    if (storeKey) {
+      overrides = await ProductOverride.find({ storeKey });
+      if (overrides.length > 0) {
+        resolvedStoreKey = storeKey;
+        resolvedStoreName = storeName || (overrides[0] && overrides[0].storeName) || storeKey;
+      }
+    }
+
+    if (overrides.length === 0) {
+      overrides = await ProductOverride.find({ storeKey: DEFAULT_STORE_KEY });
+      if (overrides.length > 0) {
+        resolvedStoreKey = DEFAULT_STORE_KEY;
+        resolvedStoreName = DEFAULT_STORE_NAME;
+      }
+    }
+
+    if (overrides.length === 0) {
       overrides = await ProductOverride.find(getGlobalStoreQuery());
+      if (overrides.length > 0) {
+        resolvedStoreKey = null;
+        resolvedStoreName = null;
+      }
     }
 
     const overridesObj = {};
@@ -589,7 +623,7 @@ app.get('/api/product-overrides', async (req, res) => {
       overridesObj[o.id] = sanitizeOverrideDoc(o);
     });
 
-    res.json({ overrides: overridesObj, store: storeName || null, storeKey: storeKey || null });
+    res.json({ overrides: overridesObj, store: resolvedStoreName, storeKey: resolvedStoreKey });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -597,18 +631,21 @@ app.get('/api/product-overrides', async (req, res) => {
 
 app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) => {
   try {
-    const { storeKey, storeName } = getStoreMetaFromRequest(req);
-    const overrides = req.body || {};
+    const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
+    const body = req.body || {};
+    const overrides = (!Array.isArray(body) && body && typeof body === 'object' && body.overrides && typeof body.overrides === 'object')
+      ? body.overrides
+      : body;
 
-    await ProductOverride.deleteMany(getStoreQuery(storeKey));
+    await ProductOverride.deleteMany({ storeKey });
 
-    const docs = Object.keys(overrides).map(id => ({ id, ...sanitizeIncomingOverrideValue(overrides[id]), storeKey: storeKey || null, storeName: storeName || null }));
+    const docs = Object.keys(overrides).map(id => ({ id, ...sanitizeIncomingOverrideValue(overrides[id]), storeKey, storeName }));
     if (docs.length > 0) {
       await ProductOverride.insertMany(docs);
     }
 
     globalLastUpdate = Date.now();
-    res.json({ ok: true, overrides, store: storeName || null, storeKey: storeKey || null });
+    res.json({ ok: true, overrides, store: storeName, storeKey });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -616,14 +653,14 @@ app.put('/api/product-overrides', authMiddleware(['admin']), async (req, res) =>
 
 app.put('/api/product-overrides/:id', authMiddleware(['admin']), async (req, res) => {
   try {
-    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
     const id = req.params.id;
     const update = req.body || {};
-    const query = storeKey ? { id, storeKey } : { id, ...getGlobalStoreQuery() };
-    const nextValue = { ...sanitizeIncomingOverrideValue(update), id, storeKey: storeKey || null, storeName: storeName || null };
+    const query = { id, storeKey };
+    const nextValue = { ...sanitizeIncomingOverrideValue(update), id, storeKey, storeName };
     const override = await ProductOverride.findOneAndUpdate(query, nextValue, { upsert: true, new: true });
     globalLastUpdate = Date.now();
-    res.json({ ok: true, override, store: storeName || null, storeKey: storeKey || null });
+    res.json({ ok: true, override, store: storeName, storeKey });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
