@@ -55,8 +55,11 @@ const productSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   name: String,
   price: Number,
-  // Add other fields as needed
-});
+  image: String,
+  category: String,
+  qtyLimit: Number,
+  outOfStock: Boolean,
+}, { strict: false }); // allow extra fields from future updates
 
 const orderSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
@@ -64,12 +67,19 @@ const orderSchema = new mongoose.Schema({
   items: Array,
   userName: String,
   userPhone: String,
+  userEmail: String,
   receiverPhone: String,
+  deliveryTimeSlot: String,
   location: Object,
   subtotal: Number,
   fees: Object,
   discount: Number,
   total: Number,
+  paymentMethod: String,
+  orderMode: String,   // 'b2b' | 'b2c'
+  orderType: String,   // 'b2b' | 'b2c'
+  channel: String,     // 'b2b' | 'b2c'
+  businessType: String,
   status: String,
   history: Array,
   assignedTo: Object,
@@ -345,6 +355,7 @@ app.post('/api/orders', async (req, res) => {
       userName: data.userName || '',
       userPhone: data.userPhone || '',
       receiverPhone: data.receiverPhone || '',
+      deliveryTimeSlot: data.deliveryTimeSlot || '',
       location: data.location || null,
       subtotal: data.subtotal || 0,
       fees: data.fees || {},
@@ -353,6 +364,12 @@ app.post('/api/orders', async (req, res) => {
       darkStoreId: data.darkStoreId || '',
       darkStoreName: data.darkStoreName || '',
       darkStore: data.darkStore || null,
+      userEmail: data.userEmail || '',
+      paymentMethod: data.paymentMethod || '',
+      orderMode: data.orderMode || '',
+      orderType: data.orderType || '',
+      channel: data.channel || '',
+      businessType: data.businessType || '',
       status: 'pending',
       history: [{ status: 'pending', at: new Date().toISOString() }]
     });
@@ -669,6 +686,15 @@ app.put('/api/product-overrides/:id', authMiddleware(['admin']), async (req, res
 // Last update timestamp for polling
 app.get('/api/last-update', (req, res) => {
   res.json({ lastUpdate: globalLastUpdate });
+});
+
+// Receiver mobile logging (used by storefront when receiver phone is entered)
+app.post('/api/receiver-mobile', (req, res) => {
+  const { userPhone, receiverPhone } = req.body || {};
+  if (!receiverPhone) return res.status(400).json({ error: 'receiverPhone required' });
+  // Log for operational visibility; no persistent storage needed
+  console.log(`[receiver-mobile] user=${userPhone || 'guest'} receiver=${receiverPhone}`);
+  res.json({ ok: true });
 });
 
 // fallback
