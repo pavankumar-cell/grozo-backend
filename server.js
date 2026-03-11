@@ -122,7 +122,21 @@ const feeSchema = new mongoose.Schema({
   value: Object,
 });
 
+const b2bFeeSchema = new mongoose.Schema({
+  _id: String, // Use _id for key
+  storeKey: String,
+  storeName: String,
+  value: Object,
+});
+
 const promoSchema = new mongoose.Schema({
+  id: String,
+  storeKey: String,
+  storeName: String,
+  // allow arbitrary promo fields (discount, type, meta etc.)
+}, { strict: false });
+
+const b2bPromoSchema = new mongoose.Schema({
   id: String,
   storeKey: String,
   storeName: String,
@@ -136,14 +150,32 @@ const productOverrideSchema = new mongoose.Schema({
   // allow arbitrary override fields (price, outOfStock, limit, image, etc.)
 }, { strict: false });
 
+const b2bProductOverrideSchema = new mongoose.Schema({
+  id: String,
+  storeKey: String,
+  storeName: String,
+  // allow arbitrary override fields (price, outOfStock, limit, image, etc.)
+}, { strict: false });
+
+const b2bProductSchema = new mongoose.Schema({
+  id: String,
+  storeKey: String,
+  storeName: String,
+  // allow arbitrary product fields (name, category, image, prices, qtyLimit etc.)
+}, { strict: false });
+
 // Models
 const Product = mongoose.model('Product', productSchema);
 const Order = mongoose.model('Order', orderSchema);
 const User = mongoose.model('User', userSchema);
 const Token = mongoose.model('Token', tokenSchema);
 const Fee = mongoose.model('Fee', feeSchema);
+const B2BFee = mongoose.model('B2BFee', b2bFeeSchema);
 const Promo = mongoose.model('Promo', promoSchema);
+const B2BPromo = mongoose.model('B2BPromo', b2bPromoSchema);
 const ProductOverride = mongoose.model('ProductOverride', productOverrideSchema);
+const B2BProductOverride = mongoose.model('B2BProductOverride', b2bProductOverrideSchema);
+const B2BProduct = mongoose.model('B2BProduct', b2bProductSchema);
 
 const DEFAULT_STORE_KEY = 'default_location';
 const DEFAULT_STORE_NAME = 'Default Location';
@@ -166,10 +198,11 @@ function toStoreKey(storeName) {
 
 function getStoreMetaFromRequest(req) {
   const queryStore = req && req.query ? req.query.store : '';
+  const queryStoreKey = req && req.query ? (req.query.storeKey || '') : '';
   const bodyStore = req && req.body && !Array.isArray(req.body) ? req.body.store : '';
   const bodyStoreKey = req && req.body && !Array.isArray(req.body) ? (req.body.storeKey || '') : '';
   const storeName = normalizeStoreName(queryStore || bodyStore || '');
-  const storeKey = toStoreKey(storeName || bodyStoreKey);
+  const storeKey = toStoreKey(storeName || bodyStoreKey || queryStoreKey);
   return { storeName, storeKey };
 }
 
@@ -678,6 +711,200 @@ app.put('/api/product-overrides/:id', authMiddleware(['admin']), async (req, res
     const override = await ProductOverride.findOneAndUpdate(query, nextValue, { upsert: true, new: true });
     globalLastUpdate = Date.now();
     res.json({ ok: true, override, store: storeName, storeKey });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- B2B Fees ---
+app.get('/api/b2b/fees', async (req, res) => {
+  try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    const storeDocId = storeKey ? `b2b_fees__${storeKey}` : 'b2b_fees';
+
+    let feeDoc = await B2BFee.findOne({ _id: storeDocId });
+    if (!feeDoc && storeKey) {
+      feeDoc = await B2BFee.findOne({ _id: 'b2b_fees' });
+    }
+
+    res.json({ fees: feeDoc ? feeDoc.value : {}, store: storeName || null, storeKey: storeKey || null });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/b2b/fees', authMiddleware(['admin']), async (req, res) => {
+  try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    const fees = req.body || {};
+    const storeDocId = storeKey ? `b2b_fees__${storeKey}` : 'b2b_fees';
+
+    await B2BFee.findOneAndUpdate(
+      { _id: storeDocId },
+      { _id: storeDocId, storeKey: storeKey || null, storeName: storeName || null, value: fees },
+      { upsert: true }
+    );
+
+    globalLastUpdate = Date.now();
+    res.json({ ok: true, fees, store: storeName || null, storeKey: storeKey || null });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- B2B Promos ---
+app.get('/api/b2b/promos', async (req, res) => {
+  try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    let promos = await B2BPromo.find(getStoreQuery(storeKey));
+
+    if (storeKey && promos.length === 0) {
+      promos = await B2BPromo.find(getGlobalStoreQuery());
+    }
+
+    res.json({ promos, store: storeName || null, storeKey: storeKey || null });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/b2b/promos', authMiddleware(['admin']), async (req, res) => {
+  try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    await B2BPromo.deleteMany(getStoreQuery(storeKey));
+    const promos = Array.isArray(req.body) ? req.body : (req.body.promos || []);
+
+    if (promos.length > 0) {
+      const docs = promos.map(p => ({ ...p, storeKey: storeKey || null, storeName: storeName || null }));
+      await B2BPromo.insertMany(docs);
+    }
+
+    globalLastUpdate = Date.now();
+    res.json({ ok: true, promos, store: storeName || null, storeKey: storeKey || null });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- B2B Product Overrides ---
+app.get('/api/b2b/product-overrides', async (req, res) => {
+  try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    let resolvedStoreKey = null;
+    let resolvedStoreName = null;
+    let overrides = [];
+
+    if (storeKey) {
+      overrides = await B2BProductOverride.find({ storeKey });
+      if (overrides.length > 0) {
+        resolvedStoreKey = storeKey;
+        resolvedStoreName = storeName || (overrides[0] && overrides[0].storeName) || storeKey;
+      }
+    }
+
+    if (overrides.length === 0) {
+      overrides = await B2BProductOverride.find({ storeKey: DEFAULT_STORE_KEY });
+      if (overrides.length > 0) {
+        resolvedStoreKey = DEFAULT_STORE_KEY;
+        resolvedStoreName = DEFAULT_STORE_NAME;
+      }
+    }
+
+    if (overrides.length === 0) {
+      overrides = await B2BProductOverride.find(getGlobalStoreQuery());
+      if (overrides.length > 0) {
+        resolvedStoreKey = null;
+        resolvedStoreName = null;
+      }
+    }
+
+    const overridesObj = {};
+    overrides.forEach(o => {
+      overridesObj[o.id] = sanitizeOverrideDoc(o);
+    });
+
+    res.json({ overrides: overridesObj, store: resolvedStoreName, storeKey: resolvedStoreKey });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/b2b/product-overrides', authMiddleware(['admin']), async (req, res) => {
+  try {
+    const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
+    const body = req.body || {};
+    const overrides = (!Array.isArray(body) && body && typeof body === 'object' && body.overrides && typeof body.overrides === 'object')
+      ? body.overrides
+      : body;
+
+    await B2BProductOverride.deleteMany({ storeKey });
+
+    const docs = Object.keys(overrides).map(id => ({ id, ...sanitizeIncomingOverrideValue(overrides[id]), storeKey, storeName }));
+    if (docs.length > 0) {
+      await B2BProductOverride.insertMany(docs);
+    }
+
+    globalLastUpdate = Date.now();
+    res.json({ ok: true, overrides, store: storeName, storeKey });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- B2B Product Catalog ---
+app.get('/api/b2b/products', async (req, res) => {
+  try {
+    const { storeKey, storeName } = getStoreMetaFromRequest(req);
+    let resolvedStoreKey = null;
+    let resolvedStoreName = null;
+    let products = [];
+
+    if (storeKey) {
+      products = await B2BProduct.find({ storeKey });
+      if (products.length > 0) {
+        resolvedStoreKey = storeKey;
+        resolvedStoreName = storeName || (products[0] && products[0].storeName) || storeKey;
+      }
+    }
+
+    if (products.length === 0) {
+      products = await B2BProduct.find({ storeKey: DEFAULT_STORE_KEY });
+      if (products.length > 0) {
+        resolvedStoreKey = DEFAULT_STORE_KEY;
+        resolvedStoreName = DEFAULT_STORE_NAME;
+      }
+    }
+
+    if (products.length === 0) {
+      products = await B2BProduct.find(getGlobalStoreQuery());
+      if (products.length > 0) {
+        resolvedStoreKey = null;
+        resolvedStoreName = null;
+      }
+    }
+
+    const cleaned = products.map(p => sanitizeOverrideDoc(p));
+    res.json({ products: cleaned, store: resolvedStoreName, storeKey: resolvedStoreKey });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/b2b/products', authMiddleware(['admin']), async (req, res) => {
+  try {
+    const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
+    const body = req.body || {};
+    const products = Array.isArray(body) ? body : (Array.isArray(body.products) ? body.products : []);
+
+    await B2BProduct.deleteMany({ storeKey });
+
+    if (products.length > 0) {
+      const docs = products.map(p => ({ ...sanitizeIncomingOverrideValue(p), id: p.id, storeKey, storeName })).filter(p => !!p.id);
+      if (docs.length > 0) await B2BProduct.insertMany(docs);
+    }
+
+    globalLastUpdate = Date.now();
+    res.json({ ok: true, products, store: storeName, storeKey });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
