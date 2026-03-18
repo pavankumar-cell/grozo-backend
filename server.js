@@ -2,6 +2,8 @@ const express = require('express');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const https = require('https');
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
 
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
@@ -12,6 +14,27 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://bpavan422_db_user:
 
 const app = express();
 app.use(express.json());
+
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || process.env.cloud_name;
+const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || process.env.api_key;
+const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || process.env.api_secret;
+
+cloudinary.config({
+  cloud_name: CLOUDINARY_CLOUD_NAME,
+  api_key: CLOUDINARY_API_KEY,
+  api_secret: CLOUDINARY_API_SECRET,
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    cb(null, true);
+  },
+});
 
 // Global last update timestamp
 let globalLastUpdate = Date.now();
@@ -922,6 +945,50 @@ app.post('/api/receiver-mobile', (req, res) => {
   // Log for operational visibility; no persistent storage needed
   console.log(`[receiver-mobile] user=${userPhone || 'guest'} receiver=${receiverPhone}`);
   res.json({ ok: true });
+});
+
+
+app.post('/upload-image', (req, res) => {
+  upload.single('image')(req, res, async (err) => {
+    if (err) {
+      const isMulterError = err instanceof multer.MulterError;
+      const status = isMulterError ? 400 : 500;
+      return res.status(status).json({ error: err.message || 'Image upload failed' });
+    }
+
+    try {
+      const hasCloudinaryConfig =
+        !!CLOUDINARY_CLOUD_NAME &&
+        !!CLOUDINARY_API_KEY &&
+        !!CLOUDINARY_API_SECRET;
+
+      if (!hasCloudinaryConfig) {
+        return res.status(500).json({
+          error: 'Cloudinary environment variables are not configured',
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ error: 'image file is required' });
+      }
+
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'grozo_products', resource_type: 'image' },
+          (uploadErr, uploadResult) => {
+            if (uploadErr) return reject(uploadErr);
+            resolve(uploadResult);
+          }
+        );
+        stream.end(req.file.buffer);
+      });
+
+      return res.json({ secure_url: result.secure_url });
+    } catch (uploadError) {
+      console.error('Cloudinary upload error:', uploadError);
+      return res.status(500).json({ error: 'Failed to upload image' });
+    }
+  });
 });
 
 // fallback
