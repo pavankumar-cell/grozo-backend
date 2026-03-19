@@ -187,6 +187,15 @@ const b2bProductSchema = new mongoose.Schema({
   // allow arbitrary product fields (name, category, image, prices, qtyLimit etc.)
 }, { strict: false });
 
+const darkStoreLocationSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  name: String,
+  address: String,
+  latitude: Number,
+  longitude: Number,
+  createdAt: String,
+}, { strict: false });
+
 // Models
 const Product = mongoose.model('Product', productSchema);
 const Order = mongoose.model('Order', orderSchema);
@@ -199,6 +208,7 @@ const B2BPromo = mongoose.model('B2BPromo', b2bPromoSchema);
 const ProductOverride = mongoose.model('ProductOverride', productOverrideSchema);
 const B2BProductOverride = mongoose.model('B2BProductOverride', b2bProductOverrideSchema);
 const B2BProduct = mongoose.model('B2BProduct', b2bProductSchema);
+const DarkStoreLocation = mongoose.model('DarkStoreLocation', darkStoreLocationSchema);
 
 const DEFAULT_STORE_KEY = 'default_location';
 const DEFAULT_STORE_NAME = 'Default Location';
@@ -928,6 +938,59 @@ app.put('/api/b2b/products', authMiddleware(['admin']), async (req, res) => {
 
     globalLastUpdate = Date.now();
     res.json({ ok: true, products, store: storeName, storeKey });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- Dark Store Locations (used by Admin Panel) ---
+app.get('/api/dark-stores', async (req, res) => {
+  try {
+    const locations = await DarkStoreLocation.find({}).sort({ createdAt: 1, name: 1, id: 1 });
+    res.json({ locations });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/dark-stores', authMiddleware(['admin']), async (req, res) => {
+  try {
+    const locations = Array.isArray(req.body)
+      ? req.body
+      : (Array.isArray(req.body && req.body.locations) ? req.body.locations : []);
+
+    const cleaned = locations
+      .map((loc) => {
+        const src = loc && typeof loc === 'object' ? loc : {};
+        const id = (src.id || '').toString().trim();
+        const name = normalizeStoreName(src.name || '');
+        if (!id || !name) return null;
+
+        const next = {
+          id,
+          name,
+          address: (src.address || '').toString().trim(),
+          createdAt: src.createdAt || new Date().toISOString(),
+        };
+
+        const lat = Number(src.latitude);
+        const lng = Number(src.longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          next.latitude = lat;
+          next.longitude = lng;
+        }
+
+        return next;
+      })
+      .filter(Boolean);
+
+    await DarkStoreLocation.deleteMany({});
+    if (cleaned.length > 0) {
+      await DarkStoreLocation.insertMany(cleaned, { ordered: true });
+    }
+
+    globalLastUpdate = Date.now();
+    res.json({ ok: true, locations: cleaned });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
