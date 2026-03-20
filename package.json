@@ -12,7 +12,6 @@
     "cloudinary": "^2.9.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
-    "firebase-admin": "^12.7.0",
     "mongoose": "^8.0.0",
     "multer": "^2.1.1"
   }
