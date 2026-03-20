@@ -138,6 +138,15 @@ const tokenSchema = new mongoose.Schema({
   createdAt: String,
 });
 
+const otpSessionSchema = new mongoose.Schema({
+  phone: { type: String, required: true, unique: true },
+  otpHash: { type: String, required: true },
+  expiresAt: { type: Date, required: true },
+  attempts: { type: Number, default: 0 },
+  sentAt: { type: Date, required: true },
+  lastAttemptAt: Date,
+}, { strict: false });
+
 const feeSchema = new mongoose.Schema({
   _id: String, // Use _id for key
   storeKey: String,
@@ -201,6 +210,7 @@ const Product = mongoose.model('Product', productSchema);
 const Order = mongoose.model('Order', orderSchema);
 const User = mongoose.model('User', userSchema);
 const Token = mongoose.model('Token', tokenSchema);
+const OtpSession = mongoose.model('OtpSession', otpSessionSchema);
 const Fee = mongoose.model('Fee', feeSchema);
 const B2BFee = mongoose.model('B2BFee', b2bFeeSchema);
 const Promo = mongoose.model('Promo', promoSchema);
@@ -212,6 +222,13 @@ const DarkStoreLocation = mongoose.model('DarkStoreLocation', darkStoreLocationS
 
 const DEFAULT_STORE_KEY = 'default_location';
 const DEFAULT_STORE_NAME = 'Default Location';
+const FAST2SMS_API_KEY = (process.env.FAST2SMS_API_KEY || '').trim();
+const FAST2SMS_ROUTE = process.env.FAST2SMS_ROUTE || 'otp';
+const OTP_LENGTH = Math.max(4, Number(process.env.OTP_LENGTH || 6));
+const OTP_EXPIRY_SECONDS = Math.max(60, Number(process.env.OTP_EXPIRY_SECONDS || 300));
+const OTP_RESEND_SECONDS = Math.max(15, Number(process.env.OTP_RESEND_SECONDS || 30));
+const OTP_MAX_ATTEMPTS = Math.max(3, Number(process.env.OTP_MAX_ATTEMPTS || 5));
+const OTP_HASH_SECRET = process.env.OTP_HASH_SECRET || 'change_me_in_env';
 
 function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -219,6 +236,83 @@ function sha256(text) {
 
 function generateToken() {
   return crypto.randomBytes(24).toString('hex');
+}
+
+function normalizeIndianPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length === 10) return digits;
+  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+  return '';
+}
+
+function hashOtpForPhone(phone, otp) {
+  return sha256(`${phone}:${otp}:${OTP_HASH_SECRET}`);
+}
+
+function generateOtp() {
+  const min = Math.pow(10, OTP_LENGTH - 1);
+  const max = Math.pow(10, OTP_LENGTH) - 1;
+  return String(Math.floor(min + Math.random() * (max - min + 1)));
+}
+
+function postJson(url, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const payload = JSON.stringify(body || {});
+    const req = https.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || 443,
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        ...headers,
+      },
+    }, (resp) => {
+      let data = '';
+      resp.on('data', (chunk) => { data += chunk; });
+      resp.on('end', () => {
+        let parsed = null;
+        try {
+          parsed = data ? JSON.parse(data) : {};
+        } catch (err) {
+          parsed = { raw: data };
+        }
+        resolve({ statusCode: resp.statusCode || 0, data: parsed });
+      });
+    });
+
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function sendFast2SMSOtp(phone, otp) {
+  if (!FAST2SMS_API_KEY) {
+    throw new Error('FAST2SMS_API_KEY is not configured');
+  }
+
+  const response = await postJson('https://www.fast2sms.com/dev/bulkV2', {
+    route: FAST2SMS_ROUTE,
+    variables_values: otp,
+    flash: 0,
+    numbers: phone,
+  }, {
+    authorization: FAST2SMS_API_KEY,
+  });
+
+  const responseOk = response.statusCode >= 200
+    && response.statusCode < 300
+    && response.data
+    && response.data.return === true;
+
+  if (!responseOk) {
+    const msg = (response.data && (response.data.message || response.data.error)) || 'Fast2SMS request failed';
+    throw new Error(msg);
+  }
 }
 
 function normalizeStoreName(value) {
@@ -258,6 +352,62 @@ function sanitizeIncomingOverrideValue(value) {
   const src = (value && typeof value === 'object') ? value : {};
   const { _id, __v, id, storeKey, storeName, ...rest } = src;
   return rest;
+}
+
+function normalizeStockNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  if (n < 0) return 0;
+  return Math.floor(n);
+}
+
+function applyStockRulesToOverrideDoc(overrideDoc) {
+  const stock = normalizeStockNumber(overrideDoc.availableStock);
+  if (stock === null) return false;
+
+  overrideDoc.availableStock = stock;
+
+  const qtyLimit = Number(overrideDoc.qtyLimit);
+  if (!Number.isFinite(qtyLimit) || qtyLimit > stock) {
+    overrideDoc.qtyLimit = stock;
+  }
+
+  if (stock <= 0) {
+    overrideDoc.outOfStock = true;
+    overrideDoc.qtyLimit = 0;
+  }
+  return true;
+}
+
+async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
+  const OverrideModel = isB2B ? B2BProductOverride : ProductOverride;
+  const updated = [];
+
+  for (const rawItem of (Array.isArray(items) ? items : [])) {
+    const productId = rawItem && rawItem.id ? String(rawItem.id) : '';
+    const qty = normalizeStockNumber(rawItem && rawItem.qty);
+    if (!productId || qty === null || qty <= 0) continue;
+
+    const overrideDoc = await OverrideModel.findOne({ id: productId, storeKey });
+    if (!overrideDoc) continue;
+
+    const currentStock = normalizeStockNumber(overrideDoc.availableStock);
+    if (currentStock === null) continue;
+
+    overrideDoc.availableStock = Math.max(0, currentStock - qty);
+    applyStockRulesToOverrideDoc(overrideDoc);
+    if (storeName) overrideDoc.storeName = storeName;
+    await overrideDoc.save();
+
+    updated.push({
+      id: productId,
+      availableStock: overrideDoc.availableStock,
+      qtyLimit: overrideDoc.qtyLimit,
+      outOfStock: overrideDoc.outOfStock === true
+    });
+  }
+
+  return updated;
 }
 
 function getEffectiveProductOverrideStoreMeta(req) {
@@ -352,6 +502,112 @@ app.post('/api/auth/register-delivery', async (req, res) => {
   }
 });
 
+app.post('/api/auth/otp/send', async (req, res) => {
+  const phone = normalizeIndianPhone(req.body && req.body.phone);
+  if (!phone) return res.status(400).json({ error: 'valid 10-digit phone required' });
+
+  try {
+    const now = new Date();
+    const existing = await OtpSession.findOne({ phone });
+    if (existing && existing.sentAt) {
+      const waitSeconds = Math.ceil((existing.sentAt.getTime() + (OTP_RESEND_SECONDS * 1000) - now.getTime()) / 1000);
+      if (waitSeconds > 0) {
+        return res.status(429).json({ error: `Please wait ${waitSeconds}s before requesting OTP again`, retryAfter: waitSeconds });
+      }
+    }
+
+    const otp = generateOtp();
+    await sendFast2SMSOtp(phone, otp);
+
+    const expiresAt = new Date(now.getTime() + (OTP_EXPIRY_SECONDS * 1000));
+    await OtpSession.findOneAndUpdate(
+      { phone },
+      {
+        phone,
+        otpHash: hashOtpForPhone(phone, otp),
+        expiresAt,
+        attempts: 0,
+        sentAt: now,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return res.json({ ok: true, expiresIn: OTP_EXPIRY_SECONDS });
+  } catch (err) {
+    console.error('OTP send failed:', err && err.message ? err.message : err);
+    return res.status(500).json({ error: 'Failed to send OTP' });
+  }
+});
+
+app.post('/api/auth/otp/verify', async (req, res) => {
+  const phone = normalizeIndianPhone(req.body && req.body.phone);
+  const otp = String((req.body && req.body.otp) || '').trim();
+
+  if (!phone) return res.status(400).json({ error: 'valid 10-digit phone required' });
+  if (!/^\d+$/.test(otp) || otp.length !== OTP_LENGTH) {
+    return res.status(400).json({ error: `valid ${OTP_LENGTH}-digit otp required` });
+  }
+
+  try {
+    const session = await OtpSession.findOne({ phone });
+    if (!session) return res.status(400).json({ error: 'OTP not requested for this number' });
+
+    const now = new Date();
+    if (session.expiresAt && session.expiresAt.getTime() < now.getTime()) {
+      await OtpSession.deleteOne({ phone });
+      return res.status(400).json({ error: 'OTP expired. Please request a new OTP' });
+    }
+
+    const attempts = Number(session.attempts || 0);
+    if (attempts >= OTP_MAX_ATTEMPTS) {
+      await OtpSession.deleteOne({ phone });
+      return res.status(429).json({ error: 'Too many invalid attempts. Please request a new OTP' });
+    }
+
+    const expectedHash = hashOtpForPhone(phone, otp);
+    if (session.otpHash !== expectedHash) {
+      session.attempts = attempts + 1;
+      session.lastAttemptAt = now;
+      await session.save();
+      return res.status(401).json({ error: 'Invalid OTP' });
+    }
+
+    await OtpSession.deleteOne({ phone });
+
+    let user = await User.findOne({ username: phone, role: 'customer' });
+    if (!user) {
+      user = new User({
+        id: 'u_' + Date.now(),
+        username: phone,
+        role: 'customer',
+        name: 'Grozo User',
+        meta: { phoneVerifiedAt: now.toISOString() },
+      });
+      await user.save();
+    } else {
+      user.meta = Object.assign({}, user.meta || {}, { phoneVerifiedAt: now.toISOString() });
+      await user.save();
+    }
+
+    const token = generateToken();
+    const newToken = new Token({ token, userId: user.id, createdAt: now.toISOString() });
+    await newToken.save();
+
+    return res.json({
+      ok: true,
+      token,
+      user: {
+        id: user.id,
+        name: user.name || 'Grozo User',
+        phone,
+      }
+    });
+  } catch (err) {
+    console.error('OTP verify failed:', err && err.message ? err.message : err);
+    return res.status(500).json({ error: 'Failed to verify OTP' });
+  }
+});
+
 // --- Products ---
 app.get('/api/products', async (req, res) => {
   try {
@@ -413,6 +669,17 @@ app.post('/api/orders', async (req, res) => {
   const data = req.body || {};
   if (!data.items || !Array.isArray(data.items) || data.items.length === 0) return res.status(400).json({ error: 'items required' });
   try {
+    const orderTypeText = [data.orderMode, data.orderType, data.channel, data.businessType]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const isB2B = orderTypeText.includes('b2b');
+    const inferredStoreName = normalizeStoreName(
+      (data.darkStore && data.darkStore.name) || data.darkStoreName || ''
+    );
+    const inferredStoreKey = toStoreKey(inferredStoreName || (data.darkStore && data.darkStore.id) || data.darkStoreId || '') || DEFAULT_STORE_KEY;
+    const inferredStoreLabel = inferredStoreName || inferredStoreKey;
+
     const id = 'ORD' + Date.now().toString().slice(-8);
     const order = new Order({
       id,
@@ -440,7 +707,19 @@ app.post('/api/orders', async (req, res) => {
       history: [{ status: 'pending', at: new Date().toISOString() }]
     });
     await order.save();
-    res.json({ ok: true, order });
+
+    const stockUpdates = await decrementOrderItemsStock({
+      items: data.items,
+      isB2B,
+      storeKey: inferredStoreKey,
+      storeName: inferredStoreLabel
+    });
+
+    if (stockUpdates.length > 0) {
+      globalLastUpdate = Date.now();
+    }
+
+    res.json({ ok: true, order, stockUpdates });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
