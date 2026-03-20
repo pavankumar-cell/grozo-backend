@@ -3,7 +3,6 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const https = require('https');
 const multer = require('multer');
-const firebaseAdmin = require('firebase-admin');
 const cloudinary = require('cloudinary').v2;
 
 if (process.env.NODE_ENV !== 'production') {
@@ -222,48 +221,6 @@ function generateToken() {
   return crypto.randomBytes(24).toString('hex');
 }
 
-let firebaseAdminInitialized = false;
-
-function initFirebaseAdmin() {
-  if (firebaseAdminInitialized) return true;
-  try {
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    let credentialPayload = null;
-
-    if (serviceAccountJson) {
-      credentialPayload = JSON.parse(serviceAccountJson);
-    } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
-      credentialPayload = {
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
-      };
-    }
-
-    if (!credentialPayload) return false;
-
-    if (!firebaseAdmin.apps.length) {
-      firebaseAdmin.initializeApp({
-        credential: firebaseAdmin.credential.cert(credentialPayload)
-      });
-    }
-
-    firebaseAdminInitialized = true;
-    console.log('Firebase Admin initialized successfully');
-    return true;
-  } catch (err) {
-    console.error('Firebase Admin initialization failed:', err && err.message ? err.message : err);
-    return false;
-  }
-}
-
-function normalizeIndianPhone(value) {
-  const digits = String(value || '').replace(/\D/g, '');
-  if (digits.length === 10) return digits;
-  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
-  return '';
-}
-
 function normalizeStoreName(value) {
   return (value || '').toString().trim().replace(/\s+/g, ' ');
 }
@@ -281,9 +238,6 @@ function getStoreMetaFromRequest(req) {
   const storeKey = toStoreKey(storeName || bodyStoreKey || queryStoreKey);
   return { storeName, storeKey };
 }
-
-// Try once at boot; endpoint also retries to support delayed env injection.
-initFirebaseAdmin();
 
 function getGlobalStoreQuery() {
   return { $or: [{ storeKey: { $exists: false } }, { storeKey: null }, { storeKey: '' }] };
@@ -451,72 +405,6 @@ app.post('/api/auth/register-delivery', async (req, res) => {
     res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.post('/api/auth/firebase-phone-login', async (req, res) => {
-  const { idToken, phone } = req.body || {};
-  if (!idToken) return res.status(400).json({ error: 'idToken required' });
-
-  try {
-    if (!initFirebaseAdmin()) {
-      return res.status(500).json({ error: 'firebase_not_configured' });
-    }
-
-    const decoded = await firebaseAdmin.auth().verifyIdToken(idToken, true);
-    const firebasePhoneRaw = decoded && decoded.phone_number ? decoded.phone_number : '';
-    const firebasePhone = normalizeIndianPhone(firebasePhoneRaw);
-    const requestedPhone = normalizeIndianPhone(phone || firebasePhoneRaw);
-
-    if (!firebasePhone) {
-      return res.status(401).json({ error: 'invalid_phone_token' });
-    }
-
-    if (requestedPhone && requestedPhone !== firebasePhone) {
-      return res.status(401).json({ error: 'phone_mismatch' });
-    }
-
-    const customerPhone = firebasePhone;
-    const username = `cust_${customerPhone}`;
-
-    let user = await User.findOne({ username, role: 'customer' });
-    if (!user) {
-      user = new User({
-        id: 'u_' + Date.now(),
-        username,
-        role: 'customer',
-        name: (decoded && decoded.name) || 'Grozo User',
-        meta: {
-          firebaseUid: decoded.uid,
-          phoneE164: '+91' + customerPhone
-        }
-      });
-      await user.save();
-    } else {
-      user.name = user.name || (decoded && decoded.name) || 'Grozo User';
-      user.meta = Object.assign({}, user.meta || {}, {
-        firebaseUid: decoded.uid,
-        phoneE164: '+91' + customerPhone
-      });
-      await user.save();
-    }
-
-    const token = generateToken();
-    await new Token({ token, userId: user.id, createdAt: new Date().toISOString() }).save();
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        name: user.name || 'Grozo User',
-        phone: customerPhone,
-        email: '',
-        picture: ''
-      }
-    });
-  } catch (err) {
-    console.error('Firebase phone login error:', err && err.message ? err.message : err);
-    res.status(401).json({ error: 'otp_verification_failed', details: (err && err.message) || String(err) });
   }
 });
 
