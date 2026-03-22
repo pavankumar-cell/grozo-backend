@@ -221,6 +221,12 @@ function generateToken() {
   return crypto.randomBytes(24).toString('hex');
 }
 
+const BENEFICIARY_CODE_LIMITS = {
+  GBC14PA4N260: 10,
+  GBC6P1VL4R32: 25,
+  GBC3L021K96P: 50,
+};
+
 function normalizeStoreName(value) {
   return (value || '').toString().trim().replace(/\s+/g, ' ');
 }
@@ -384,25 +390,96 @@ app.post('/api/auth/login', async (req, res) => {
 
 // Delivery registration (creates delivery user if not exists)
 app.post('/api/auth/register-delivery', async (req, res) => {
-  const { phone, name, vehicle, vehicleNo } = req.body || {};
+  const { phone, name, vehicle, vehicleNo, password } = req.body || {};
+  const beneficiaryCode = String((req.body || {}).beneficiaryCode || '').trim().toUpperCase();
   if (!phone || !name) return res.status(400).json({ error: 'phone and name required' });
+  if (!password || password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+  if (!beneficiaryCode || !BENEFICIARY_CODE_LIMITS[beneficiaryCode]) {
+    return res.status(400).json({ error: 'Valid beneficiaryCode required' });
+  }
   try {
     let user = await User.findOne({ username: phone, role: 'delivery' });
+    const existingCode = user && user.meta ? String(user.meta.beneficiaryCode || '').trim().toUpperCase() : '';
+
+    if (user && existingCode && existingCode !== beneficiaryCode) {
+      return res.status(400).json({ error: 'This phone is already registered with another beneficiary code' });
+    }
+
+    if (!user) {
+      const currentCount = await User.countDocuments({ role: 'delivery', 'meta.beneficiaryCode': beneficiaryCode });
+      const limit = BENEFICIARY_CODE_LIMITS[beneficiaryCode];
+      if (currentCount >= limit) {
+        return res.status(400).json({ error: `Beneficiary code limit reached (${limit} users)` });
+      }
+    }
+
     if (!user) {
       user = new User({
         id: 'u_' + Date.now(),
         username: phone,
-        passwordHash: sha256(phone.slice(-4) || '0000'),
+        passwordHash: sha256(password),
         role: 'delivery',
         name,
-        meta: { vehicle, vehicleNo }
+        meta: { vehicle, vehicleNo, beneficiaryCode }
       });
+      await user.save();
+    } else {
+      user.name = name;
+      user.passwordHash = sha256(password);
+      user.meta = user.meta || {};
+      user.meta.vehicle = vehicle;
+      user.meta.vehicleNo = vehicleNo;
+      user.meta.beneficiaryCode = beneficiaryCode;
       await user.save();
     }
     const token = generateToken();
     const newToken = new Token({ token, userId: user.id, createdAt: new Date().toISOString() });
     await newToken.save();
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
+    res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name, beneficiaryCode } });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/auth/verify-delivery-reset', async (req, res) => {
+  const { phone, oldPassword } = req.body || {};
+  const beneficiaryCode = String((req.body || {}).beneficiaryCode || '').trim().toUpperCase();
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  if (!oldPassword && !beneficiaryCode) return res.status(400).json({ error: 'oldPassword or beneficiaryCode required' });
+
+  try {
+    const user = await User.findOne({ username: phone, role: 'delivery' });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    let verified = false;
+    if (oldPassword && user.passwordHash === sha256(oldPassword)) {
+      verified = true;
+    }
+
+    if (!verified && beneficiaryCode) {
+      const userCode = user && user.meta ? String(user.meta.beneficiaryCode || '').trim().toUpperCase() : '';
+      if (userCode && userCode === beneficiaryCode) verified = true;
+    }
+
+    if (!verified) return res.status(401).json({ error: 'Verification failed' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/auth/reset-delivery-password', async (req, res) => {
+  const { phone, newPassword } = req.body || {};
+  if (!phone || !newPassword) return res.status(400).json({ error: 'phone and newPassword required' });
+  if (String(newPassword).length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+
+  try {
+    const user = await User.findOne({ username: phone, role: 'delivery' });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    user.passwordHash = sha256(String(newPassword));
+    await user.save();
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
