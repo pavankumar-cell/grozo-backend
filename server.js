@@ -511,7 +511,31 @@ app.post('/api/products', authMiddleware(['admin']), async (req, res) => {
   try {
     const existing = await Product.findOne({ id: data.id });
     if (existing) return res.status(400).json({ error: 'Product id already exists' });
-    const product = new Product(data);
+
+    const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
+    const nextData = { ...data, storeKey, storeName };
+
+    const stock = normalizeStockNumber(nextData.availableStock);
+    if (stock !== null) {
+      nextData.availableStock = stock;
+      const qtyLimit = Number(nextData.qtyLimit);
+      if (!Number.isFinite(qtyLimit) || qtyLimit > stock) {
+        nextData.qtyLimit = stock;
+      }
+      if (stock <= 0) {
+        nextData.outOfStock = true;
+        nextData.qtyLimit = 0;
+      }
+    } else if (typeof nextData.qtyLimit !== 'undefined') {
+      const qtyLimit = normalizeStockNumber(nextData.qtyLimit);
+      if (qtyLimit === null) {
+        delete nextData.qtyLimit;
+      } else {
+        nextData.qtyLimit = qtyLimit;
+      }
+    }
+
+    const product = new Product(nextData);
     await product.save();
     globalLastUpdate = Date.now();
     res.json({ ok: true, product });
