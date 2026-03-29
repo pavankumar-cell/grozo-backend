@@ -777,26 +777,16 @@ app.get('/api/orders/user/:phone', async (req, res) => {
 // Generic order update (admin/delivery) - merges provided fields into order
 app.put('/api/orders/:id', authMiddleware(['admin','delivery']), async (req, res) => {
   try {
-    console.log('[PUT /api/orders/:id] Incoming request:', {
-      id: req.params.id,
-      user: req.user && req.user.username,
-      body: req.body
-    });
     const toMerge = req.body || {};
     delete toMerge.id;
     const order = await Order.findOneAndUpdate({ id: req.params.id }, { $set: toMerge }, { new: true });
-    if (!order) {
-      console.warn('[PUT /api/orders/:id] Order not found:', req.params.id);
-      return res.status(404).json({ error: 'Order not found' });
-    }
+    if (!order) return res.status(404).json({ error: 'Order not found' });
     order.history = order.history || [];
     order.history.push({ updatedBy: req.user.username, at: new Date().toISOString(), changes: Object.keys(toMerge) });
     await order.save();
-    console.log('[PUT /api/orders/:id] Order updated successfully:', order.id, Object.keys(toMerge));
     res.json({ ok: true, order });
   } catch (err) {
-    console.error('[PUT /api/orders/:id] Server error:', err);
-    res.status(500).json({ error: 'Server error', details: err && err.message });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
