@@ -123,12 +123,26 @@ const orderSchema = new mongoose.Schema({
   darkStore: Object,
 });
 
+
 const userSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
   passwordHash: String,
   role: String,
   name: String,
+  meta: Object,
+});
+
+// Delivery Partner Schema
+const deliveryPartnerSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  phone: { type: String, required: true, unique: true },
+  passwordHash: String,
+  name: String,
+  vehicle: String,
+  vehicleNo: String,
+  beneficiaryCode: String,
+  createdAt: { type: Date, default: Date.now },
   meta: Object,
 });
 
@@ -200,6 +214,7 @@ const darkStoreLocationSchema = new mongoose.Schema({
 const Product = mongoose.model('Product', productSchema);
 const Order = mongoose.model('Order', orderSchema);
 const User = mongoose.model('User', userSchema);
+const DeliveryPartner = mongoose.model('DeliveryPartner', deliveryPartnerSchema);
 const Token = mongoose.model('Token', tokenSchema);
 const Fee = mongoose.model('Fee', feeSchema);
 const B2BFee = mongoose.model('B2BFee', b2bFeeSchema);
@@ -389,6 +404,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Delivery registration (creates delivery user if not exists)
+
 app.post('/api/auth/register-delivery', async (req, res) => {
   const { phone, name, vehicle, vehicleNo, password } = req.body || {};
   const beneficiaryCode = String((req.body || {}).beneficiaryCode || '').trim().toUpperCase();
@@ -398,44 +414,42 @@ app.post('/api/auth/register-delivery', async (req, res) => {
     return res.status(400).json({ error: 'Valid beneficiaryCode required' });
   }
   try {
-    let user = await User.findOne({ username: phone, role: 'delivery' });
-    const existingCode = user && user.meta ? String(user.meta.beneficiaryCode || '').trim().toUpperCase() : '';
-
-    if (user && existingCode && existingCode !== beneficiaryCode) {
+    let partner = await DeliveryPartner.findOne({ phone });
+    if (partner && partner.beneficiaryCode && partner.beneficiaryCode !== beneficiaryCode) {
       return res.status(400).json({ error: 'This phone is already registered with another beneficiary code' });
     }
-
-    if (!user) {
-      const currentCount = await User.countDocuments({ role: 'delivery', 'meta.beneficiaryCode': beneficiaryCode });
+    if (!partner) {
+      const currentCount = await DeliveryPartner.countDocuments({ beneficiaryCode });
       const limit = BENEFICIARY_CODE_LIMITS[beneficiaryCode];
       if (currentCount >= limit) {
         return res.status(400).json({ error: `Beneficiary code limit reached (${limit} users)` });
       }
     }
-
-    if (!user) {
-      user = new User({
-        id: 'u_' + Date.now(),
-        username: phone,
+    if (!partner) {
+      partner = new DeliveryPartner({
+        id: 'dp_' + Date.now(),
+        phone,
         passwordHash: sha256(password),
-        role: 'delivery',
         name,
-        meta: { vehicle, vehicleNo, beneficiaryCode }
+        vehicle,
+        vehicleNo,
+        beneficiaryCode,
+        meta: {}
       });
-      await user.save();
+      await partner.save();
     } else {
-      user.name = name;
-      user.passwordHash = sha256(password);
-      user.meta = user.meta || {};
-      user.meta.vehicle = vehicle;
-      user.meta.vehicleNo = vehicleNo;
-      user.meta.beneficiaryCode = beneficiaryCode;
-      await user.save();
+      partner.name = name;
+      partner.passwordHash = sha256(password);
+      partner.vehicle = vehicle;
+      partner.vehicleNo = vehicleNo;
+      partner.beneficiaryCode = beneficiaryCode;
+      await partner.save();
     }
+    // Token logic: create a token and store userId as partner.id
     const token = generateToken();
-    const newToken = new Token({ token, userId: user.id, createdAt: new Date().toISOString() });
+    const newToken = new Token({ token, userId: partner.id, createdAt: new Date().toISOString() });
     await newToken.save();
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name, beneficiaryCode } });
+    res.json({ token, user: { id: partner.id, phone: partner.phone, name: partner.name, beneficiaryCode } });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
