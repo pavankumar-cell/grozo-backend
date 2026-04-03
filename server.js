@@ -375,8 +375,24 @@ function authMiddleware(requiredRoles = []) {
     try {
       const t = await Token.findOne({ token });
       if (!t) return res.status(401).json({ error: 'Invalid token' });
-      const user = await User.findOne({ id: t.userId });
-      if (!user) return res.status(401).json({ error: 'User not found' });
+
+      // Resolve token owner from either User or DeliveryPartner collection.
+      let user = await User.findOne({ id: t.userId });
+      if (!user) {
+        const partner = await DeliveryPartner.findOne({ id: t.userId });
+        if (!partner) return res.status(401).json({ error: 'User not found' });
+
+        // Normalize delivery partner identity to the same shape expected by routes.
+        user = {
+          id: partner.id,
+          role: 'delivery',
+          username: partner.phone || partner.name || partner.id,
+          name: partner.name || partner.phone || partner.id,
+          phone: partner.phone,
+          isDeliveryPartner: true,
+        };
+      }
+
       if (requiredRoles.length && !requiredRoles.includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
       req.user = user;
       next();
