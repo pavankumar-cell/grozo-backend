@@ -348,6 +348,8 @@ function getEffectiveProductOverrideStoreMeta(req) {
 // Initialize default admin
 async function initDB() {
   try {
+    await ensureProductCollections();
+
     const adminExists = await User.findOne({ role: 'admin' });
     if (!adminExists) {
       const admin = new User({
@@ -362,6 +364,20 @@ async function initDB() {
     }
   } catch (err) {
     console.error('Error initializing DB:', err);
+  }
+}
+
+async function ensureProductCollections() {
+  const models = [Product, B2BProduct, ProductOverride, B2BProductOverride];
+  for (const model of models) {
+    try {
+      await model.createCollection();
+      await model.syncIndexes();
+    } catch (err) {
+      if (err && err.codeName !== 'NamespaceExists' && err.code !== 48) {
+        console.warn(`Collection bootstrap warning for ${model.modelName}:`, err.message || err);
+      }
+    }
   }
 }
 
@@ -550,9 +566,6 @@ app.post('/api/products', authMiddleware(['admin']), async (req, res) => {
   const data = req.body || {};
   if (!data.id || !data.name) return res.status(400).json({ error: 'id and name required' });
   try {
-    const existing = await Product.findOne({ id: data.id });
-    if (existing) return res.status(400).json({ error: 'Product id already exists' });
-
     const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
     const nextData = { ...data, storeKey, storeName };
 
@@ -576,11 +589,16 @@ app.post('/api/products', authMiddleware(['admin']), async (req, res) => {
       }
     }
 
-    const product = new Product(nextData);
-    await product.save();
+    const product = await Product.findOneAndUpdate(
+      { id: data.id },
+      { $set: nextData, $setOnInsert: { id: data.id } },
+      { new: true, upsert: true, runValidators: true }
+    );
+
     globalLastUpdate = Date.now();
     res.json({ ok: true, product });
   } catch (err) {
+    console.error('POST /api/products failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
