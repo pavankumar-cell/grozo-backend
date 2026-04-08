@@ -11,9 +11,30 @@ if (process.env.NODE_ENV !== 'production') {
 
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://bpavan422_db_user:s5mIhGPgtgF7F9TH@grozo-cluster.asew17j.mongodb.net/?appName=grozo-cluster'; // Replace with your MongoDB Atlas URI
+const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypartner.netlify.app').split(',');
 
 const app = express();
-app.use(express.json());
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const cleanOrigin = origin ? origin.replace(/\/$/, '') : '';
+
+  const isLocalhost = cleanOrigin.startsWith('http://localhost') || cleanOrigin.startsWith('http://127.0.0.1');
+  const isAllowed = !origin || ALLOWED_FRONTENDS.includes(cleanOrigin) || isLocalhost;
+
+  if (isAllowed) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
+app.use(express.json({ limit: '10mb' }));
 
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || process.env.cloud_name;
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || process.env.api_key;
@@ -46,32 +67,6 @@ mongoose.connect(MONGODB_URI)
     initDB();
   })
   .catch(err => console.error('MongoDB connection error:', err));
-
-// CORS middleware: allow known frontends for development
-const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypartner.netlify.app').split(',');
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const cleanOrigin = origin ? origin.replace(/\/$/, '') : '';
-  
-  // Allow requests if:
-  // 1. No origin (same-origin requests from backend itself), OR
-  // 2. Origin is in the whitelist, OR
-  // 3. Origin is localhost/127.0.0.1 (for local development)
-  const isLocalhost = cleanOrigin.startsWith('http://localhost') || cleanOrigin.startsWith('http://127.0.0.1');
-  const isAllowed = !origin || ALLOWED_FRONTENDS.includes(cleanOrigin) || isLocalhost;
-  
-  if (isAllowed) {
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  }
-  
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
 
 // Define Mongoose schemas
 const productSchema = new mongoose.Schema({
