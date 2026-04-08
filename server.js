@@ -11,30 +11,9 @@ if (process.env.NODE_ENV !== 'production') {
 
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://bpavan422_db_user:s5mIhGPgtgF7F9TH@grozo-cluster.asew17j.mongodb.net/?appName=grozo-cluster'; // Replace with your MongoDB Atlas URI
-const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypartner.netlify.app').split(',');
 
 const app = express();
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const cleanOrigin = origin ? origin.replace(/\/$/, '') : '';
-
-  const isLocalhost = cleanOrigin.startsWith('http://localhost') || cleanOrigin.startsWith('http://127.0.0.1');
-  const isAllowed = !origin || ALLOWED_FRONTENDS.includes(cleanOrigin) || isLocalhost;
-
-  if (isAllowed) {
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  }
-
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
-
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json());
 
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || process.env.cloud_name;
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || process.env.api_key;
@@ -67,6 +46,32 @@ mongoose.connect(MONGODB_URI)
     initDB();
   })
   .catch(err => console.error('MongoDB connection error:', err));
+
+// CORS middleware: allow known frontends for development
+const ALLOWED_FRONTENDS = (process.env.ALLOWED_FRONTENDS || 'https://grozo.online,https://grozo-admin.netlify.app,https://grozo-dashboard.netlify.app,https://grozo-deliverypartner.netlify.app').split(',');
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const cleanOrigin = origin ? origin.replace(/\/$/, '') : '';
+  
+  // Allow requests if:
+  // 1. No origin (same-origin requests from backend itself), OR
+  // 2. Origin is in the whitelist, OR
+  // 3. Origin is localhost/127.0.0.1 (for local development)
+  const isLocalhost = cleanOrigin.startsWith('http://localhost') || cleanOrigin.startsWith('http://127.0.0.1');
+  const isAllowed = !origin || ALLOWED_FRONTENDS.includes(cleanOrigin) || isLocalhost;
+  
+  if (isAllowed) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  }
+  
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
 // Define Mongoose schemas
 const productSchema = new mongoose.Schema({
@@ -343,8 +348,6 @@ function getEffectiveProductOverrideStoreMeta(req) {
 // Initialize default admin
 async function initDB() {
   try {
-    await ensureProductCollections();
-
     const adminExists = await User.findOne({ role: 'admin' });
     if (!adminExists) {
       const admin = new User({
@@ -362,20 +365,6 @@ async function initDB() {
   }
 }
 
-async function ensureProductCollections() {
-  const models = [Product, B2BProduct, ProductOverride, B2BProductOverride];
-  for (const model of models) {
-    try {
-      await model.createCollection();
-      await model.syncIndexes();
-    } catch (err) {
-      if (err && err.codeName !== 'NamespaceExists' && err.code !== 48) {
-        console.warn(`Collection bootstrap warning for ${model.modelName}:`, err.message || err);
-      }
-    }
-  }
-}
-
 // --- auth middleware ---
 function authMiddleware(requiredRoles = []) {
   return async (req, res, next) => {
@@ -386,24 +375,8 @@ function authMiddleware(requiredRoles = []) {
     try {
       const t = await Token.findOne({ token });
       if (!t) return res.status(401).json({ error: 'Invalid token' });
-
-      // Resolve token owner from either User or DeliveryPartner collection.
-      let user = await User.findOne({ id: t.userId });
-      if (!user) {
-        const partner = await DeliveryPartner.findOne({ id: t.userId });
-        if (!partner) return res.status(401).json({ error: 'User not found' });
-
-        // Normalize delivery partner identity to the same shape expected by routes.
-        user = {
-          id: partner.id,
-          role: 'delivery',
-          username: partner.phone || partner.name || partner.id,
-          name: partner.name || partner.phone || partner.id,
-          phone: partner.phone,
-          isDeliveryPartner: true,
-        };
-      }
-
+      const user = await User.findOne({ id: t.userId });
+      if (!user) return res.status(401).json({ error: 'User not found' });
       if (requiredRoles.length && !requiredRoles.includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
       req.user = user;
       next();
@@ -561,6 +534,9 @@ app.post('/api/products', authMiddleware(['admin']), async (req, res) => {
   const data = req.body || {};
   if (!data.id || !data.name) return res.status(400).json({ error: 'id and name required' });
   try {
+    const existing = await Product.findOne({ id: data.id });
+    if (existing) return res.status(400).json({ error: 'Product id already exists' });
+
     const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
     const nextData = { ...data, storeKey, storeName };
 
@@ -584,16 +560,11 @@ app.post('/api/products', authMiddleware(['admin']), async (req, res) => {
       }
     }
 
-    const product = await Product.findOneAndUpdate(
-      { id: data.id },
-      { $set: nextData, $setOnInsert: { id: data.id } },
-      { new: true, upsert: true, runValidators: true }
-    );
-
+    const product = new Product(nextData);
+    await product.save();
     globalLastUpdate = Date.now();
     res.json({ ok: true, product });
   } catch (err) {
-    console.error('POST /api/products failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
