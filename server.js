@@ -308,126 +308,32 @@ function applyStockRulesToOverrideDoc(overrideDoc) {
 
 async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
   const OverrideModel = isB2B ? B2BProductOverride : ProductOverride;
-  const ProductModel = isB2B ? B2BProduct : Product;
   const updated = [];
-
-  const normalizedStoreName = normalizeStoreName(storeName || '');
-  const normalizedStoreKey = toStoreKey(storeKey || normalizedStoreName || '') || DEFAULT_STORE_KEY;
-  const storeKeyCandidates = Array.from(new Set([
-    normalizedStoreKey,
-    toStoreKey(normalizedStoreName),
-    DEFAULT_STORE_KEY
-  ].filter(Boolean)));
-
-  const storeMatchOr = [];
-  storeKeyCandidates.forEach((key) => {
-    storeMatchOr.push({ storeKey: key });
-  });
-  if (normalizedStoreName) {
-    storeMatchOr.push({ storeName: normalizedStoreName });
-  }
-
-  console.log('[STOCK DECREMENT] Starting stock decrement', {
-    itemCount: Array.isArray(items) ? items.length : 0,
-    isB2B,
-    storeKey,
-    storeName,
-    normalizedStoreKey,
-    normalizedStoreName,
-    storeKeyCandidates,
-    storeMatchOr
-  });
 
   for (const rawItem of (Array.isArray(items) ? items : [])) {
     const productId = rawItem && rawItem.id ? String(rawItem.id) : '';
-    const qty = normalizeStockNumber(
-      rawItem && (
-        rawItem.qty ??
-        rawItem.quantity ??
-        rawItem.count ??
-        rawItem.units
-      )
-    );
-    
-    console.log('[STOCK DECREMENT] Processing item:', { productId, qty, rawItem });
-    
-    if (!productId || qty === null || qty <= 0) {
-      console.log('[STOCK DECREMENT] Skipping item - invalid productId or qty');
-      continue;
-    }
+    const qty = normalizeStockNumber(rawItem && rawItem.qty);
+    if (!productId || qty === null || qty <= 0) continue;
 
-    let stockDoc = null;
-    let stockDocSource = 'override';
+    const overrideDoc = await OverrideModel.findOne({ id: productId, storeKey });
+    if (!overrideDoc) continue;
 
-    if (storeMatchOr.length > 0) {
-      stockDoc = await OverrideModel.findOne({ id: productId, $or: storeMatchOr });
-      console.log('[STOCK DECREMENT] After storeMatchOr lookup:', { found: !!stockDoc, model: 'Override' });
-    }
-    if (!stockDoc) {
-      stockDoc = await OverrideModel.findOne({ id: productId, storeKey: DEFAULT_STORE_KEY });
-      console.log('[STOCK DECREMENT] After DEFAULT_STORE_KEY lookup:', { found: !!stockDoc, model: 'Override' });
-    }
-    if (!stockDoc) {
-      stockDoc = await OverrideModel.findOne({ id: productId });
-      console.log('[STOCK DECREMENT] After id-only lookup:', { found: !!stockDoc, model: 'Override' });
-    }
-    if (!stockDoc) {
-      stockDoc = await ProductModel.findOne({ id: productId, $or: storeMatchOr });
-      stockDocSource = 'product';
-      console.log('[STOCK DECREMENT] After storeMatchOr lookup:', { found: !!stockDoc, model: 'Product' });
-    }
-    if (!stockDoc) {
-      stockDoc = await ProductModel.findOne({ id: productId });
-      stockDocSource = 'product';
-      console.log('[STOCK DECREMENT] After id-only lookup:', { found: !!stockDoc, model: 'Product' });
-    }
-    
-    if (!stockDoc) {
-      console.log('[STOCK DECREMENT] No document found for product:', productId);
-      continue;
-    }
+    const currentStock = normalizeStockNumber(overrideDoc.availableStock);
+    if (currentStock === null) continue;
 
-    const currentStock = normalizeStockNumber(stockDoc.availableStock);
-    console.log('[STOCK DECREMENT] Found document:', {
-      productId,
-      currentStock,
-      qty,
-      source: stockDocSource,
-      storeKey: stockDoc.storeKey,
-      storeName: stockDoc.storeName
-    });
-    
-    if (currentStock === null) {
-      console.log('[STOCK DECREMENT] Invalid current stock');
-      continue;
-    }
-
-    stockDoc.availableStock = Math.max(0, currentStock - qty);
-    applyStockRulesToOverrideDoc(stockDoc);
-    if (normalizedStoreName && stockDocSource === 'override') {
-      stockDoc.storeName = normalizedStoreName;
-    }
-    
-    console.log('[STOCK DECREMENT] Before save:', {
-      productId,
-      oldStock: currentStock,
-      newStock: stockDoc.availableStock,
-      qty
-    });
-    
-    await stockDoc.save();
-    
-    console.log('[STOCK DECREMENT] After save - document saved successfully');
+    overrideDoc.availableStock = Math.max(0, currentStock - qty);
+    applyStockRulesToOverrideDoc(overrideDoc);
+    if (storeName) overrideDoc.storeName = storeName;
+    await overrideDoc.save();
 
     updated.push({
       id: productId,
-      availableStock: stockDoc.availableStock,
-      qtyLimit: stockDoc.qtyLimit,
-      outOfStock: stockDoc.outOfStock === true
+      availableStock: overrideDoc.availableStock,
+      qtyLimit: overrideDoc.qtyLimit,
+      outOfStock: overrideDoc.outOfStock === true
     });
   }
 
-  console.log('[STOCK DECREMENT] Completed. Updated items:', updated);
   return updated;
 }
 
@@ -689,40 +595,16 @@ app.post('/api/orders', async (req, res) => {
   const data = req.body || {};
   if (!data.items || !Array.isArray(data.items) || data.items.length === 0) return res.status(400).json({ error: 'items required' });
   try {
-    console.log('[ORDER ENDPOINT] Received order payload:', {
-      itemCount: data.items.length,
-      firstItem: data.items[0],
-      darkStore: data.darkStore,
-      darkStoreName: data.darkStoreName,
-      darkStoreId: data.darkStoreId
-    });
-
     const orderTypeText = [data.orderMode, data.orderType, data.channel, data.businessType]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
     const isB2B = orderTypeText.includes('b2b');
-    const firstItem = Array.isArray(data.items) && data.items.length > 0 ? data.items[0] : null;
     const inferredStoreName = normalizeStoreName(
-      (data.darkStore && data.darkStore.name) ||
-      data.darkStoreName ||
-      (firstItem && (firstItem.storeName || firstItem.store)) ||
-      ''
+      (data.darkStore && data.darkStore.name) || data.darkStoreName || ''
     );
-    const inferredStoreKey = toStoreKey(
-      inferredStoreName ||
-      (data.darkStore && data.darkStore.id) ||
-      data.darkStoreId ||
-      (firstItem && firstItem.storeKey) ||
-      ''
-    ) || DEFAULT_STORE_KEY;
+    const inferredStoreKey = toStoreKey(inferredStoreName || (data.darkStore && data.darkStore.id) || data.darkStoreId || '') || DEFAULT_STORE_KEY;
     const inferredStoreLabel = inferredStoreName || inferredStoreKey;
-
-    console.log('[ORDER ENDPOINT] Inferred store info:', {
-      inferredStoreName,
-      inferredStoreKey,
-      inferredStoreLabel
-    });
 
     const id = 'ORD' + Date.now().toString().slice(-8);
     const order = new Order({
