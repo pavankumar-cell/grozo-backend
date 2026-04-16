@@ -123,26 +123,12 @@ const orderSchema = new mongoose.Schema({
   darkStore: Object,
 });
 
-
 const userSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
   passwordHash: String,
   role: String,
   name: String,
-  meta: Object,
-});
-
-// Delivery Partner Schema
-const deliveryPartnerSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  phone: { type: String, required: true, unique: true },
-  passwordHash: String,
-  name: String,
-  vehicle: String,
-  vehicleNo: String,
-  beneficiaryCode: String,
-  createdAt: { type: Date, default: Date.now },
   meta: Object,
 });
 
@@ -214,7 +200,6 @@ const darkStoreLocationSchema = new mongoose.Schema({
 const Product = mongoose.model('Product', productSchema);
 const Order = mongoose.model('Order', orderSchema);
 const User = mongoose.model('User', userSchema);
-const DeliveryPartner = mongoose.model('DeliveryPartner', deliveryPartnerSchema);
 const Token = mongoose.model('Token', tokenSchema);
 const Fee = mongoose.model('Fee', feeSchema);
 const B2BFee = mongoose.model('B2BFee', b2bFeeSchema);
@@ -235,12 +220,6 @@ function sha256(text) {
 function generateToken() {
   return crypto.randomBytes(24).toString('hex');
 }
-
-const BENEFICIARY_CODE_LIMITS = {
-  GBC14PA4N260: 10,
-  GBC6P1VL4R32: 25,
-  GBC3L021K96P: 50,
-};
 
 function normalizeStoreName(value) {
   return (value || '').toString().trim().replace(/\s+/g, ' ');
@@ -387,21 +366,10 @@ function authMiddleware(requiredRoles = []) {
 }
 
 // --- Auth routes ---
-// Delivery Partner Login
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'username and password required' });
   try {
-    // Try DeliveryPartner first
-    let partner = await DeliveryPartner.findOne({ phone: username });
-    if (partner) {
-      if (partner.passwordHash !== sha256(password)) return res.status(401).json({ error: 'Invalid credentials' });
-      const token = generateToken();
-      const newToken = new Token({ token, userId: partner.id, createdAt: new Date().toISOString() });
-      await newToken.save();
-      return res.json({ token, user: { id: partner.id, phone: partner.phone, name: partner.name, beneficiaryCode: partner.beneficiaryCode } });
-    }
-    // Fallback to User (for admin, etc.)
     const user = await User.findOne({ username });
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
     if (user.passwordHash !== sha256(password)) return res.status(401).json({ error: 'Invalid credentials' });
@@ -415,96 +383,26 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Delivery registration (creates delivery user if not exists)
-
 app.post('/api/auth/register-delivery', async (req, res) => {
-  const { phone, name, vehicle, vehicleNo, password } = req.body || {};
-  const beneficiaryCode = String((req.body || {}).beneficiaryCode || '').trim().toUpperCase();
+  const { phone, name, vehicle, vehicleNo } = req.body || {};
   if (!phone || !name) return res.status(400).json({ error: 'phone and name required' });
-  if (!password || password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
-  if (!beneficiaryCode || !BENEFICIARY_CODE_LIMITS[beneficiaryCode]) {
-    return res.status(400).json({ error: 'Valid beneficiaryCode required' });
-  }
   try {
-    let partner = await DeliveryPartner.findOne({ phone });
-    if (partner && partner.beneficiaryCode && partner.beneficiaryCode !== beneficiaryCode) {
-      return res.status(400).json({ error: 'This phone is already registered with another beneficiary code' });
-    }
-    if (!partner) {
-      const currentCount = await DeliveryPartner.countDocuments({ beneficiaryCode });
-      const limit = BENEFICIARY_CODE_LIMITS[beneficiaryCode];
-      if (currentCount >= limit) {
-        return res.status(400).json({ error: `Beneficiary code limit reached (${limit} users)` });
-      }
-    }
-    if (!partner) {
-      partner = new DeliveryPartner({
-        id: 'dp_' + Date.now(),
-        phone,
-        passwordHash: sha256(password),
+    let user = await User.findOne({ username: phone, role: 'delivery' });
+    if (!user) {
+      user = new User({
+        id: 'u_' + Date.now(),
+        username: phone,
+        passwordHash: sha256(phone.slice(-4) || '0000'),
+        role: 'delivery',
         name,
-        vehicle,
-        vehicleNo,
-        beneficiaryCode,
-        meta: {}
+        meta: { vehicle, vehicleNo }
       });
-      await partner.save();
-    } else {
-      partner.name = name;
-      partner.passwordHash = sha256(password);
-      partner.vehicle = vehicle;
-      partner.vehicleNo = vehicleNo;
-      partner.beneficiaryCode = beneficiaryCode;
-      await partner.save();
+      await user.save();
     }
-    // Token logic: create a token and store userId as partner.id
     const token = generateToken();
-    const newToken = new Token({ token, userId: partner.id, createdAt: new Date().toISOString() });
+    const newToken = new Token({ token, userId: user.id, createdAt: new Date().toISOString() });
     await newToken.save();
-    res.json({ token, user: { id: partner.id, phone: partner.phone, name: partner.name, beneficiaryCode } });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.post('/api/auth/verify-delivery-reset', async (req, res) => {
-  const { phone, oldPassword } = req.body || {};
-  const beneficiaryCode = String((req.body || {}).beneficiaryCode || '').trim().toUpperCase();
-  if (!phone) return res.status(400).json({ error: 'phone required' });
-  if (!oldPassword && !beneficiaryCode) return res.status(400).json({ error: 'oldPassword or beneficiaryCode required' });
-
-  try {
-    const partner = await DeliveryPartner.findOne({ phone });
-    if (!partner) return res.status(404).json({ error: 'User not found' });
-
-    let verified = false;
-    if (oldPassword && partner.passwordHash === sha256(oldPassword)) {
-      verified = true;
-    }
-
-    if (!verified && beneficiaryCode) {
-      const userCode = partner.beneficiaryCode ? String(partner.beneficiaryCode).trim().toUpperCase() : '';
-      if (userCode && userCode === beneficiaryCode) verified = true;
-    }
-
-    if (!verified) return res.status(401).json({ error: 'Verification failed' });
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.post('/api/auth/reset-delivery-password', async (req, res) => {
-  const { phone, newPassword } = req.body || {};
-  if (!phone || !newPassword) return res.status(400).json({ error: 'phone and newPassword required' });
-  if (String(newPassword).length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
-
-  try {
-    const partner = await DeliveryPartner.findOne({ phone });
-    if (!partner) return res.status(404).json({ error: 'User not found' });
-
-    partner.passwordHash = sha256(String(newPassword));
-    await partner.save();
-    res.json({ ok: true });
+    res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -536,31 +434,7 @@ app.post('/api/products', authMiddleware(['admin']), async (req, res) => {
   try {
     const existing = await Product.findOne({ id: data.id });
     if (existing) return res.status(400).json({ error: 'Product id already exists' });
-
-    const { storeKey, storeName } = getEffectiveProductOverrideStoreMeta(req);
-    const nextData = { ...data, storeKey, storeName };
-
-    const stock = normalizeStockNumber(nextData.availableStock);
-    if (stock !== null) {
-      nextData.availableStock = stock;
-      const qtyLimit = Number(nextData.qtyLimit);
-      if (!Number.isFinite(qtyLimit) || qtyLimit > stock) {
-        nextData.qtyLimit = stock;
-      }
-      if (stock <= 0) {
-        nextData.outOfStock = true;
-        nextData.qtyLimit = 0;
-      }
-    } else if (typeof nextData.qtyLimit !== 'undefined') {
-      const qtyLimit = normalizeStockNumber(nextData.qtyLimit);
-      if (qtyLimit === null) {
-        delete nextData.qtyLimit;
-      } else {
-        nextData.qtyLimit = qtyLimit;
-      }
-    }
-
-    const product = new Product(nextData);
+    const product = new Product(data);
     await product.save();
     globalLastUpdate = Date.now();
     res.json({ ok: true, product });
@@ -827,7 +701,7 @@ app.put('/api/promos', authMiddleware(['admin']), async (req, res) => {
 // --- Users list (admin) and deliveries (public list) ---
 app.get('/api/delivery-partners', authMiddleware(['admin']), async (req, res) => {
   try {
-    const deliveries = await DeliveryPartner.find({});
+    const deliveries = await User.find({ role: 'delivery' });
     res.json({ deliveries });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
