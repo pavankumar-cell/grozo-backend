@@ -327,6 +327,17 @@ async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
     storeMatchOr.push({ storeName: normalizedStoreName });
   }
 
+  console.log('[STOCK DECREMENT] Starting stock decrement', {
+    itemCount: Array.isArray(items) ? items.length : 0,
+    isB2B,
+    storeKey,
+    storeName,
+    normalizedStoreKey,
+    normalizedStoreName,
+    storeKeyCandidates,
+    storeMatchOr
+  });
+
   for (const rawItem of (Array.isArray(items) ? items : [])) {
     const productId = rawItem && rawItem.id ? String(rawItem.id) : '';
     const qty = normalizeStockNumber(
@@ -337,39 +348,76 @@ async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
         rawItem.units
       )
     );
-    if (!productId || qty === null || qty <= 0) continue;
+    
+    console.log('[STOCK DECREMENT] Processing item:', { productId, qty, rawItem });
+    
+    if (!productId || qty === null || qty <= 0) {
+      console.log('[STOCK DECREMENT] Skipping item - invalid productId or qty');
+      continue;
+    }
 
     let stockDoc = null;
     let stockDocSource = 'override';
 
     if (storeMatchOr.length > 0) {
       stockDoc = await OverrideModel.findOne({ id: productId, $or: storeMatchOr });
+      console.log('[STOCK DECREMENT] After storeMatchOr lookup:', { found: !!stockDoc, model: 'Override' });
     }
     if (!stockDoc) {
       stockDoc = await OverrideModel.findOne({ id: productId, storeKey: DEFAULT_STORE_KEY });
+      console.log('[STOCK DECREMENT] After DEFAULT_STORE_KEY lookup:', { found: !!stockDoc, model: 'Override' });
     }
     if (!stockDoc) {
       stockDoc = await OverrideModel.findOne({ id: productId });
+      console.log('[STOCK DECREMENT] After id-only lookup:', { found: !!stockDoc, model: 'Override' });
     }
     if (!stockDoc) {
       stockDoc = await ProductModel.findOne({ id: productId, $or: storeMatchOr });
       stockDocSource = 'product';
+      console.log('[STOCK DECREMENT] After storeMatchOr lookup:', { found: !!stockDoc, model: 'Product' });
     }
     if (!stockDoc) {
       stockDoc = await ProductModel.findOne({ id: productId });
       stockDocSource = 'product';
+      console.log('[STOCK DECREMENT] After id-only lookup:', { found: !!stockDoc, model: 'Product' });
     }
-    if (!stockDoc) continue;
+    
+    if (!stockDoc) {
+      console.log('[STOCK DECREMENT] No document found for product:', productId);
+      continue;
+    }
 
     const currentStock = normalizeStockNumber(stockDoc.availableStock);
-    if (currentStock === null) continue;
+    console.log('[STOCK DECREMENT] Found document:', {
+      productId,
+      currentStock,
+      qty,
+      source: stockDocSource,
+      storeKey: stockDoc.storeKey,
+      storeName: stockDoc.storeName
+    });
+    
+    if (currentStock === null) {
+      console.log('[STOCK DECREMENT] Invalid current stock');
+      continue;
+    }
 
     stockDoc.availableStock = Math.max(0, currentStock - qty);
     applyStockRulesToOverrideDoc(stockDoc);
     if (normalizedStoreName && stockDocSource === 'override') {
       stockDoc.storeName = normalizedStoreName;
     }
+    
+    console.log('[STOCK DECREMENT] Before save:', {
+      productId,
+      oldStock: currentStock,
+      newStock: stockDoc.availableStock,
+      qty
+    });
+    
     await stockDoc.save();
+    
+    console.log('[STOCK DECREMENT] After save - document saved successfully');
 
     updated.push({
       id: productId,
@@ -379,6 +427,7 @@ async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
     });
   }
 
+  console.log('[STOCK DECREMENT] Completed. Updated items:', updated);
   return updated;
 }
 
@@ -640,6 +689,14 @@ app.post('/api/orders', async (req, res) => {
   const data = req.body || {};
   if (!data.items || !Array.isArray(data.items) || data.items.length === 0) return res.status(400).json({ error: 'items required' });
   try {
+    console.log('[ORDER ENDPOINT] Received order payload:', {
+      itemCount: data.items.length,
+      firstItem: data.items[0],
+      darkStore: data.darkStore,
+      darkStoreName: data.darkStoreName,
+      darkStoreId: data.darkStoreId
+    });
+
     const orderTypeText = [data.orderMode, data.orderType, data.channel, data.businessType]
       .filter(Boolean)
       .join(' ')
@@ -660,6 +717,12 @@ app.post('/api/orders', async (req, res) => {
       ''
     ) || DEFAULT_STORE_KEY;
     const inferredStoreLabel = inferredStoreName || inferredStoreKey;
+
+    console.log('[ORDER ENDPOINT] Inferred store info:', {
+      inferredStoreName,
+      inferredStoreKey,
+      inferredStoreLabel
+    });
 
     const id = 'ORD' + Date.now().toString().slice(-8);
     const order = new Order({
