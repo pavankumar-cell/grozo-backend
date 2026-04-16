@@ -349,6 +349,9 @@ async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
       stockDoc = await OverrideModel.findOne({ id: productId, storeKey: DEFAULT_STORE_KEY });
     }
     if (!stockDoc) {
+      stockDoc = await OverrideModel.findOne({ id: productId });
+    }
+    if (!stockDoc) {
       stockDoc = await ProductModel.findOne({ id: productId, $or: storeMatchOr });
       stockDocSource = 'product';
     }
@@ -642,10 +645,20 @@ app.post('/api/orders', async (req, res) => {
       .join(' ')
       .toLowerCase();
     const isB2B = orderTypeText.includes('b2b');
+    const firstItem = Array.isArray(data.items) && data.items.length > 0 ? data.items[0] : null;
     const inferredStoreName = normalizeStoreName(
-      (data.darkStore && data.darkStore.name) || data.darkStoreName || ''
+      (data.darkStore && data.darkStore.name) ||
+      data.darkStoreName ||
+      (firstItem && (firstItem.storeName || firstItem.store)) ||
+      ''
     );
-    const inferredStoreKey = toStoreKey(inferredStoreName || (data.darkStore && data.darkStore.id) || data.darkStoreId || '') || DEFAULT_STORE_KEY;
+    const inferredStoreKey = toStoreKey(
+      inferredStoreName ||
+      (data.darkStore && data.darkStore.id) ||
+      data.darkStoreId ||
+      (firstItem && firstItem.storeKey) ||
+      ''
+    ) || DEFAULT_STORE_KEY;
     const inferredStoreLabel = inferredStoreName || inferredStoreKey;
 
     const id = 'ORD' + Date.now().toString().slice(-8);
