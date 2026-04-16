@@ -308,29 +308,71 @@ function applyStockRulesToOverrideDoc(overrideDoc) {
 
 async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
   const OverrideModel = isB2B ? B2BProductOverride : ProductOverride;
+  const ProductModel = isB2B ? B2BProduct : Product;
   const updated = [];
+
+  const normalizedStoreName = normalizeStoreName(storeName || '');
+  const normalizedStoreKey = toStoreKey(storeKey || normalizedStoreName || '') || DEFAULT_STORE_KEY;
+  const storeKeyCandidates = Array.from(new Set([
+    normalizedStoreKey,
+    toStoreKey(normalizedStoreName),
+    DEFAULT_STORE_KEY
+  ].filter(Boolean)));
+
+  const storeMatchOr = [];
+  storeKeyCandidates.forEach((key) => {
+    storeMatchOr.push({ storeKey: key });
+  });
+  if (normalizedStoreName) {
+    storeMatchOr.push({ storeName: normalizedStoreName });
+  }
 
   for (const rawItem of (Array.isArray(items) ? items : [])) {
     const productId = rawItem && rawItem.id ? String(rawItem.id) : '';
-    const qty = normalizeStockNumber(rawItem && rawItem.qty);
+    const qty = normalizeStockNumber(
+      rawItem && (
+        rawItem.qty ??
+        rawItem.quantity ??
+        rawItem.count ??
+        rawItem.units
+      )
+    );
     if (!productId || qty === null || qty <= 0) continue;
 
-    const overrideDoc = await OverrideModel.findOne({ id: productId, storeKey });
-    if (!overrideDoc) continue;
+    let stockDoc = null;
+    let stockDocSource = 'override';
 
-    const currentStock = normalizeStockNumber(overrideDoc.availableStock);
+    if (storeMatchOr.length > 0) {
+      stockDoc = await OverrideModel.findOne({ id: productId, $or: storeMatchOr });
+    }
+    if (!stockDoc) {
+      stockDoc = await OverrideModel.findOne({ id: productId, storeKey: DEFAULT_STORE_KEY });
+    }
+    if (!stockDoc) {
+      stockDoc = await ProductModel.findOne({ id: productId, $or: storeMatchOr });
+      stockDocSource = 'product';
+    }
+    if (!stockDoc) {
+      stockDoc = await ProductModel.findOne({ id: productId });
+      stockDocSource = 'product';
+    }
+    if (!stockDoc) continue;
+
+    const currentStock = normalizeStockNumber(stockDoc.availableStock);
     if (currentStock === null) continue;
 
-    overrideDoc.availableStock = Math.max(0, currentStock - qty);
-    applyStockRulesToOverrideDoc(overrideDoc);
-    if (storeName) overrideDoc.storeName = storeName;
-    await overrideDoc.save();
+    stockDoc.availableStock = Math.max(0, currentStock - qty);
+    applyStockRulesToOverrideDoc(stockDoc);
+    if (normalizedStoreName && stockDocSource === 'override') {
+      stockDoc.storeName = normalizedStoreName;
+    }
+    await stockDoc.save();
 
     updated.push({
       id: productId,
-      availableStock: overrideDoc.availableStock,
-      qtyLimit: overrideDoc.qtyLimit,
-      outOfStock: overrideDoc.outOfStock === true
+      availableStock: stockDoc.availableStock,
+      qtyLimit: stockDoc.qtyLimit,
+      outOfStock: stockDoc.outOfStock === true
     });
   }
 
