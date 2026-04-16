@@ -332,6 +332,27 @@ async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
       overrideDoc = await OverrideModel.findOne({ id: productId, $or: [{ storeKey: { $exists: false } }, { storeKey: null }, { storeKey: '' }] });
     }
 
+    // If override doc does not exist yet, seed one from base Product stock when possible.
+    if (!overrideDoc && !isB2B) {
+      const baseProduct = await Product.findOne({ id: productId });
+      if (baseProduct) {
+        const baseStock = normalizeStockNumber(baseProduct.availableStock);
+        if (baseStock !== null) {
+          const seededStoreKey = storeKey || DEFAULT_STORE_KEY;
+          const seededStoreName = storeName || DEFAULT_STORE_NAME;
+          overrideDoc = new OverrideModel({
+            id: productId,
+            storeKey: seededStoreKey,
+            storeName: seededStoreName,
+            availableStock: baseStock,
+            qtyLimit: normalizeStockNumber(baseProduct.qtyLimit),
+            outOfStock: baseProduct.outOfStock === true
+          });
+          applyStockRulesToOverrideDoc(overrideDoc);
+        }
+      }
+    }
+
     if (!overrideDoc) continue;
 
     const currentStock = normalizeStockNumber(overrideDoc.availableStock);
