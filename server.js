@@ -306,6 +306,39 @@ function applyStockRulesToOverrideDoc(overrideDoc) {
   return true;
 }
 
+// Validate if sufficient stock exists for all order items
+async function validateOrderItemsStock({ items, isB2B, storeKey, storeName }) {
+  const OverrideModel = isB2B ? B2BProductOverride : ProductOverride;
+  const insufficientStockItems = [];
+
+  for (const rawItem of (Array.isArray(items) ? items : [])) {
+    const productId = rawItem && rawItem.id ? String(rawItem.id) : '';
+    const qty = normalizeStockNumber(rawItem && rawItem.qty);
+    if (!productId || qty === null || qty <= 0) continue;
+
+    const overrideDoc = await OverrideModel.findOne({ id: productId, storeKey });
+    if (!overrideDoc) continue;
+
+    const currentStock = normalizeStockNumber(overrideDoc.availableStock);
+    if (currentStock === null) continue;
+
+    // Check if stock is insufficient
+    if (currentStock < qty) {
+      insufficientStockItems.push({
+        id: productId,
+        name: rawItem.name || productId,
+        requestedQty: qty,
+        availableStock: currentStock
+      });
+    }
+  }
+
+  return {
+    isValid: insufficientStockItems.length === 0,
+    insufficientStockItems
+  };
+}
+
 async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
   const OverrideModel = isB2B ? B2BProductOverride : ProductOverride;
   const updated = [];
@@ -606,6 +639,22 @@ app.post('/api/orders', async (req, res) => {
     const inferredStoreKey = toStoreKey(inferredStoreName || (data.darkStore && data.darkStore.id) || data.darkStoreId || '') || DEFAULT_STORE_KEY;
     const inferredStoreLabel = inferredStoreName || inferredStoreKey;
 
+    // ✅ STEP 1: Validate stock before creating order
+    const stockValidation = await validateOrderItemsStock({
+      items: data.items,
+      isB2B,
+      storeKey: inferredStoreKey,
+      storeName: inferredStoreLabel
+    });
+
+    if (!stockValidation.isValid) {
+      return res.status(400).json({
+        error: 'Insufficient stock for one or more items',
+        insufficientStockItems: stockValidation.insufficientStockItems
+      });
+    }
+
+    // ✅ STEP 2: Create order
     const id = 'ORD' + Date.now().toString().slice(-8);
     const order = new Order({
       id,
@@ -634,6 +683,7 @@ app.post('/api/orders', async (req, res) => {
     });
     await order.save();
 
+    // ✅ STEP 3: Deduct stock from database
     const stockUpdates = await decrementOrderItemsStock({
       items: data.items,
       isB2B,
