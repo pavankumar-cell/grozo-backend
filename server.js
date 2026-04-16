@@ -315,7 +315,23 @@ async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
     const qty = normalizeStockNumber(rawItem && rawItem.qty);
     if (!productId || qty === null || qty <= 0) continue;
 
-    const overrideDoc = await OverrideModel.findOne({ id: productId, storeKey });
+    let overrideDoc = null;
+
+    // Primary: decrement stock in the inferred store scope from the incoming order.
+    if (storeKey) {
+      overrideDoc = await OverrideModel.findOne({ id: productId, storeKey });
+    }
+
+    // Fallback: if no store-specific override exists, decrement default location stock.
+    if (!overrideDoc && storeKey !== DEFAULT_STORE_KEY) {
+      overrideDoc = await OverrideModel.findOne({ id: productId, storeKey: DEFAULT_STORE_KEY });
+    }
+
+    // Final fallback: decrement legacy/global override docs when storeKey is empty/null.
+    if (!overrideDoc) {
+      overrideDoc = await OverrideModel.findOne({ id: productId, $or: [{ storeKey: { $exists: false } }, { storeKey: null }, { storeKey: '' }] });
+    }
+
     if (!overrideDoc) continue;
 
     const currentStock = normalizeStockNumber(overrideDoc.availableStock);
@@ -323,7 +339,9 @@ async function decrementOrderItemsStock({ items, isB2B, storeKey, storeName }) {
 
     overrideDoc.availableStock = Math.max(0, currentStock - qty);
     applyStockRulesToOverrideDoc(overrideDoc);
-    if (storeName) overrideDoc.storeName = storeName;
+    if (storeName && (!overrideDoc.storeName || overrideDoc.storeKey === storeKey)) {
+      overrideDoc.storeName = storeName;
+    }
     await overrideDoc.save();
 
     updated.push({
